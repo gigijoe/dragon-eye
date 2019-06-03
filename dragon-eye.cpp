@@ -26,6 +26,9 @@ using namespace std;
 #include <queue>
 #include <thread>
 
+extern "C" {
+#include "jetsonGPIO/jetsonGPIO.h"
+}
 using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
@@ -400,6 +403,19 @@ void VideoWriterThread(int width, int height)
 
 int main(int argc, char**argv)
 {
+#ifdef JETSON_NANO
+    jetsonNanoGPIONumber redLED = gpio216;     // Ouput
+    jetsonNanoGPIONumber greenLED = gpio232;     // Ouput
+
+    gpioExport(redLED);
+    gpioSetDirection(redLED, outputPin);
+
+    gpioExport(greenLED);
+    gpioSetDirection(greenLED, outputPin);
+
+    gpioSetValue(redLED, on);
+    gpioSetValue(greenLED, off);
+#endif
 #ifdef F3F_TTY_BASE
     const char *ttyName = "/dev/ttyTHS1";
 

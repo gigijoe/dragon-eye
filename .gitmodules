@@ -1,3 +1,4 @@
 [submodule "jetsonGPIO"]
 	path = jetsonGPIO
 	url = https://github.com/gigijoe/jetsonTX2GPIO
+	ignore = dirty

@@ -10,6 +10,8 @@ add_definitions( -std=c++11 )
 
 INCLUDE_DIRECTORIES(/usr/local/include/opencv4)
 
-add_executable( dragon-eye dragon-eye.cpp)
+#add_subdirectory( jetsonGPIO )
+
+add_executable( dragon-eye dragon-eye.cpp jetsonGPIO/jetsonGPIO.c )
 target_link_libraries( dragon-eye ${OpenCV_LIBS} Threads::Threads)
 
