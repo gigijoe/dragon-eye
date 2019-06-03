@@ -404,20 +404,25 @@ void VideoWriterThread(int width, int height)
 int main(int argc, char**argv)
 {
 #ifdef JETSON_NANO
-    jetsonNanoGPIONumber redLED = gpio216;     // Ouput
-    jetsonNanoGPIONumber greenLED = gpio232;     // Ouput
+    jetsonNanoGPIONumber greenLED = gpio16;     // Ouput
+    jetsonNanoGPIONumber redLED = gpio17;     // Ouput
 
-    jetsonNanoGPIONumber pushButton = gpio38;
+    jetsonNanoGPIONumber pushButton = gpio18;
 
+    /* 
+    * Do enable GPIO by /etc/profile.d/export-gpio.sh 
+    */
+    
     gpioExport(redLED);
-    gpioSetDirection(redLED, outputPin);
-    gpioSetValue(redLED, on);
-
     gpioExport(greenLED);
-    gpioSetDirection(greenLED, outputPin);
-    gpioSetValue(greenLED, off);
-
     gpioExport(pushButton);
+
+    gpioSetDirection(redLED, outputPin);
+    gpioSetValue(redLED, off);
+
+    gpioSetDirection(greenLED, outputPin);
+    gpioSetValue(greenLED, on);
+
     gpioSetDirection(pushButton, inputPin);
     unsigned int value;
     gpioGetValue(pushButton, &value);
@@ -537,7 +542,16 @@ int main(int argc, char**argv)
 
     high_resolution_clock::time_point t1(high_resolution_clock::now());
 
+#ifdef JETSON_NANO
+    unsigned int frameCount = 0;
+#endif
     while(cap.read(capFrame)) {
+#ifdef JETSON_NANO
+        if(frameCount++ % 2 == 0)
+            gpioSetValue(greenLED, on);
+        else
+            gpioSetValue(greenLED, off);
+#endif
         cvtColor(capFrame, frame, COLOR_BGR2GRAY);
 #ifdef VIDEO_OUTPUT_WINDOW
         capFrame.copyTo(outFrame);
@@ -637,7 +651,9 @@ int main(int argc, char**argv)
     	}
 
         tracker.Update(roiRect);
-
+#ifdef JETSON_NANO
+        gpioSetValue(redLED, off);
+#endif
         primaryTarget = tracker.PrimaryTarget();
         if(primaryTarget) {
 #ifdef VIDEO_OUTPUT_WINDOW
@@ -693,6 +709,9 @@ int main(int argc, char**argv)
 #ifdef F3F_TTY_BASE
         		    base_toggle(ttyFd);
 #endif
+#ifdef JETSON_NANO
+                    gpioSetValue(redLED, on);
+#endif
                 }
             }
 #endif            
@@ -731,7 +750,9 @@ int main(int argc, char**argv)
 
         t1 = high_resolution_clock::now();
     }
-
+#ifdef JETSON_NANO
+    gpioSetValue(greenLED, off);
+#endif
     //cap.release();
 
 #if defined(VIDEO_OUTPUT_FILE_NAME)
