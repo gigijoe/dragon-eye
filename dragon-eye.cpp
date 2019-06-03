@@ -407,14 +407,20 @@ int main(int argc, char**argv)
     jetsonNanoGPIONumber redLED = gpio216;     // Ouput
     jetsonNanoGPIONumber greenLED = gpio232;     // Ouput
 
+    jetsonNanoGPIONumber pushButton = gpio38;
+
     gpioExport(redLED);
     gpioSetDirection(redLED, outputPin);
+    gpioSetValue(redLED, on);
 
     gpioExport(greenLED);
     gpioSetDirection(greenLED, outputPin);
-
-    gpioSetValue(redLED, on);
     gpioSetValue(greenLED, off);
+
+    gpioExport(pushButton);
+    gpioSetDirection(pushButton, inputPin);
+    unsigned int value;
+    gpioGetValue(pushButton, &value);
 #endif
 #ifdef F3F_TTY_BASE
     const char *ttyName = "/dev/ttyTHS1";
