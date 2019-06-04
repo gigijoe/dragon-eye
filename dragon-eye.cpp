@@ -294,6 +294,7 @@ printf("primary target : %d, %d\n", p.x, p.y);
 #define MAX_NUM_TARGET 4
 
 static bool bShutdown = false;
+static bool bPause = false;
 
 void sig_handler(int signo)
 {
@@ -424,8 +425,8 @@ int main(int argc, char**argv)
     gpioSetValue(greenLED, on);
 
     gpioSetDirection(pushButton, inputPin);
-    unsigned int value;
-    gpioGetValue(pushButton, &value);
+    //unsigned int value;
+    //gpioGetValue(pushButton, &value);
 #endif
 #ifdef F3F_TTY_BASE
     const char *ttyName = "/dev/ttyTHS1";
@@ -544,9 +545,22 @@ int main(int argc, char**argv)
 
 #ifdef JETSON_NANO
     unsigned int frameCount = 0;
+    unsigned int vPushButton = 0;
 #endif
     while(cap.read(capFrame)) {
 #ifdef JETSON_NANO
+        unsigned int gv;
+        gpioGetValue(pushButton, &gv);
+
+        if(gv == 1 && vPushButton == 0) /* Raising edge */
+            bPause = !bPause;
+        vPushButton = gv;
+        if(bPause) {
+            gpioSetValue(redLED, off);
+            gpioSetValue(greenLED, off);
+            continue;
+        }
+
         if(frameCount++ % 2 == 0)
             gpioSetValue(greenLED, on);
         else
