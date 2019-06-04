@@ -273,8 +273,8 @@ printf("primary target : %d, %d\n", p.x, p.y);
 
 //#define VIDEO_OUTPUT_WINDOW
 
-#define VIDEO_OUTPUT_DIR "/tmp"
-//#define VIDEO_OUTPUT_FILE_NAME "result"
+#define VIDEO_OUTPUT_DIR "./"
+#define VIDEO_OUTPUT_FILE_NAME "result"
 
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_WINDOW)
 #define VIDEO_OUTPUT_FRAME
@@ -292,7 +292,7 @@ printf("primary target : %d, %d\n", p.x, p.y);
 #define MAX_NUM_TARGET 4
 
 static bool bShutdown = false;
-static bool bPause = false;
+static bool bPause = true;
 
 void sig_handler(int signo)
 {
@@ -366,7 +366,11 @@ void VideoWriterThread(int width, int height)
     char filePath[64];
     int videoOutoutIndex = 0;
     while(videoOutoutIndex < 1000) {
+#ifdef JETSON_NANO
+        snprintf(filePath, 64, "%s/%s%03d.mkv", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
+#else
         snprintf(filePath, 64, "%s/%s%03d.mp4", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
+#endif
         FILE *fp = fopen(filePath, "rb");
         if(fp) { /* file exist ... */
             fclose(fp);
@@ -375,8 +379,8 @@ void VideoWriterThread(int width, int height)
             break; /* File doesn't exist. OK */
     }
 #ifdef JETSON_NANO
-    char gstStr[256];
-    snprintf(gstStr, 256, "appsrc ! autovideoconvert ! omxh265enc ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
+    char gstStr[320];
+    snprintf(gstStr, 320, "appsrc ! autovideoconvert ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
         VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
     writer.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
     cout << "Vodeo output " << gstStr << endl;
@@ -499,13 +503,14 @@ int main(int argc, char**argv)
 #endif
     cout << "Drop first " << VIDEO_FRAME_DROP << " for camera stable ..." << endl;
     for(int i=0;i<VIDEO_FRAME_DROP;i++) {
-        if(!cap.read(frame))
+        if(!cap.read(capFrame))
             printf("Error read camera frame ...\n");
     }
 #endif
 
 #ifdef VIDEO_OUTPUT_FILE_NAME
-    thread outThread(&VideoWriterThread, frame.cols, frame.rows);
+    //thread outThread(&VideoWriterThread, capFrame.cols, capFrame.rows);
+    thread outThread;
 #endif
     //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorKNN();
     //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorMOG2();
@@ -549,10 +554,24 @@ int main(int argc, char**argv)
         unsigned int gv;
         gpioGetValue(pushButton, &gv);
 
-        if(gv == 1 && vPushButton == 0) /* Raising edge */
+        if(gv == 1 && vPushButton == 0) { /* Raising edge */
             bPause = !bPause;
+#ifdef VIDEO_OUTPUT_FILE_NAME
+            if(bPause) {
+                cout << "Paused ..." << endl;
+                videoWriterQueue.cancel();
+                outThread.join();
+            } else {/* Restart, record new video */
+                cout << "Restart ..." << endl;
+                outThread = thread(&VideoWriterThread, capFrame.cols, capFrame.rows);
+            }
+#endif
+        }
         vPushButton = gv;
+
         if(bPause) {
+            if(bShutdown)
+                break;
             gpioSetValue(redLED, off);
             gpioSetValue(greenLED, off);
             continue;
@@ -651,7 +670,6 @@ int main(int argc, char**argv)
             if(roiRect.size() >= MAX_NUM_TARGET) /* Deal top 5 only */
                 break;
     	}
-
         tracker.Update(roiRect);
 #ifdef JETSON_NANO
         gpioSetValue(redLED, off);
@@ -755,8 +773,10 @@ int main(int argc, char**argv)
     //cap.release();
 
 #ifdef VIDEO_OUTPUT_FILE_NAME
-    videoWriterQueue.cancel();
-    outThread.join();
+    if(bPause == false) {
+        videoWriterQueue.cancel();
+        outThread.join();
+    }
 #endif
 
 #ifdef F3F_TTY_BASE
