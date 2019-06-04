@@ -412,7 +412,7 @@ int main(int argc, char**argv)
     /* 
     * Do enable GPIO by /etc/profile.d/export-gpio.sh 
     */
-    
+
     gpioExport(redLED);
     gpioExport(greenLED);
     gpioExport(pushButton);
@@ -465,7 +465,7 @@ int main(int argc, char**argv)
 #ifdef JETSON_NANO
     /* export GST_DEBUG=2 to show debug message */
     snprintf(gstStr, 320, "nvarguscamerasrc ! video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink -e", CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e", CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 
     VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
 #else
