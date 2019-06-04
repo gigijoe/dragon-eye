@@ -326,6 +326,8 @@ private:
 void FrameQueue::cancel()
 {
     std::unique_lock<std::mutex> mlock(mutex_);
+    while(!queue_.empty())
+        queue_.pop();
     cancelled_ = true;
     cond_.notify_all();
 }
@@ -334,6 +336,8 @@ void FrameQueue::push(cv::Mat const & image)
 {
     std::unique_lock<std::mutex> mlock(mutex_);
     queue_.push(image);
+    while(queue_.size() > 16) /* Maximum Q size is 16 ... */
+        queue_.pop();
     cond_.notify_one();
 }
 
@@ -388,10 +392,9 @@ void VideoWriterThread(int width, int height)
     writer.open(filePath, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
     cout << "Vodeo output " << filePath << endl;
 #endif
-    Mat frame;
     try {
         while(1) {
-            frame = videoWriterQueue.pop();
+            Mat frame = videoWriterQueue.pop();
             if(frame.empty())
                 videoWriterQueue.cancel();
             writer.write(frame);
