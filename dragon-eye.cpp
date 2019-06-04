@@ -94,7 +94,7 @@ static void set_blocking (int fd, int should_block)
             printf ("error %d setting term attributes\n", errno);
 }
 
-#define BASE_A
+#define BASE_B
 
 static void base_toggle (int fd) 
 {
@@ -130,11 +130,11 @@ static inline bool ContoursSort(vector<cv::Point> contour1, vector<cv::Point> co
 
 inline void writeText( Mat & mat, const string text )
 {
-   int fontFace = FONT_HERSHEY_SCRIPT_SIMPLEX;
-   double fontScale = 1;
-   int thickness = 1;  
-   Point textOrg( 10, 10 );
-   putText( mat, text, textOrg, fontFace, fontScale, Scalar(0, 255, 0), thickness, 8 );
+    int fontFace = FONT_HERSHEY_SCRIPT_SIMPLEX;
+    double fontScale = 1;
+    int thickness = 1;  
+    Point textOrg( 10, 10 );
+    putText( mat, text, textOrg, fontFace, fontScale, Scalar(0, 255, 0), thickness, 8 );
 }
 
 class Target
@@ -276,10 +276,8 @@ printf("primary target : %d, %d\n", p.x, p.y);
 #define VIDEO_OUTPUT_DIR "/tmp"
 //#define VIDEO_OUTPUT_FILE_NAME "result"
 
-#ifdef VIDEO_OUTPUT_FILE_NAME
-#ifndef VIDEO_OUTPUT_WINDOW
-#define VIDEO_OUTPUT_WINDOW
-#endif 
+#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_WINDOW)
+#define VIDEO_OUTPUT_FRAME
 #endif
 
 #define VIDEO_FRAME_DROP 30
@@ -358,7 +356,7 @@ Mat FrameQueue::pop()
     return image;
 }
 
-#if defined(VIDEO_OUTPUT_FILE_NAME)
+#ifdef VIDEO_OUTPUT_FILE_NAME
 FrameQueue videoWriterQueue;
 
 void VideoWriterThread(int width, int height)
@@ -418,13 +416,13 @@ int main(int argc, char**argv)
     gpioExport(greenLED);
     gpioExport(pushButton);
 
-    gpioSetDirection(redLED, outputPin);
+    gpioSetDirection(redLED, outputPin); /* Red LED on while detection */
     gpioSetValue(redLED, off);
 
-    gpioSetDirection(greenLED, outputPin);
+    gpioSetDirection(greenLED, outputPin); /* Flash during frames */
     gpioSetValue(greenLED, on);
 
-    gpioSetDirection(pushButton, inputPin);
+    gpioSetDirection(pushButton, inputPin); /* Pause / Restart */
     //unsigned int value;
     //gpioGetValue(pushButton, &value);
 #endif
@@ -506,7 +504,7 @@ int main(int argc, char**argv)
     }
 #endif
 
-#if defined(VIDEO_OUTPUT_FILE_NAME)
+#ifdef VIDEO_OUTPUT_FILE_NAME
     thread outThread(&VideoWriterThread, frame.cols, frame.rows);
 #endif
     //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorKNN();
@@ -517,7 +515,7 @@ int main(int argc, char**argv)
     bool doSmoothMask = true;
 
     Mat foregroundMask, background;
-#ifdef VIDEO_OUTPUT_WINDOW
+#ifdef VIDEO_OUTPUT_FRAME
     Mat outFrame;
 #endif
     cuda::GpuMat gpuForegroundMask;
@@ -536,7 +534,6 @@ int main(int argc, char**argv)
         if(bShutdown)
             return 0;
     }
-
     cx = (capFrame.cols / 2) - 1;
     cy = capFrame.rows-1;
 #endif
@@ -567,7 +564,7 @@ int main(int argc, char**argv)
             gpioSetValue(greenLED, off);
 #endif
         cvtColor(capFrame, frame, COLOR_BGR2GRAY);
-#ifdef VIDEO_OUTPUT_WINDOW
+#ifdef VIDEO_OUTPUT_FRAME
         capFrame.copyTo(outFrame);
 #ifdef F3F
         line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 255, 0), 1);
@@ -579,13 +576,6 @@ int main(int argc, char**argv)
                           cv::Point(erosion_size, erosion_size) );
 #if 0 /* Very poor performance ... Running by CPU is 10 times quick */
         gpuFrame.upload(frame);
-/*
-        if(gpuFrame.channels() == 3) {
-            cuda::GpuMat destMat;
-            cuda::cvtColor(gpuFrame, destMat, COLOR_BGR2BGRA);
-            gpuFrame = destMat;
-        } 
-*/
         if(erodeFilter.empty()) 
             erodeFilter = cuda::createMorphologyFilter(MORPH_ERODE, gpuFrame.type(), element);
         erodeFilter->apply(gpuFrame, gpuFrame);
@@ -643,23 +633,21 @@ int main(int argc, char**argv)
                 boundRect[i].height > MIN_TARGET_HEIGHT &&
     			boundRect[i].width <= MAX_TARGET_WIDTH && 
                 boundRect[i].height <= MAX_TARGET_HEIGHT) {
-
+#if 1
                 if(primaryTarget && contours.size() > MAX_NUM_CONTOURS ) { /* Too many objects */
                     /* if primary target exist, try to track it ONLY and ignore others ... */
-                    if((primaryTarget->LatestRect() & boundRect[i]).area() > 0) { /* Primagy target tracked ... */
+                    if((primaryTarget->LatestRect() & boundRect[i]).area() > 0) /* Primagy target tracked ... */
                         roiRect.push_back(boundRect[i]);
-                    }
                 } else
+#endif
                     roiRect.push_back(boundRect[i]);
-
 #ifdef ENABLE_MULTI_TARGET                
-#ifdef VIDEO_OUTPUT_WINDOW
+#ifdef VIDEO_OUTPUT_FRAME
             Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
             rectangle( outFrame, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0 );
 #endif
 #endif
     		}
-
             if(roiRect.size() >= MAX_NUM_TARGET) /* Deal top 5 only */
                 break;
     	}
@@ -670,7 +658,7 @@ int main(int argc, char**argv)
 #endif
         primaryTarget = tracker.PrimaryTarget();
         if(primaryTarget) {
-#ifdef VIDEO_OUTPUT_WINDOW
+#ifdef VIDEO_OUTPUT_FRAME
             Rect r = primaryTarget->m_rects.back();
             rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
 
@@ -682,7 +670,7 @@ int main(int argc, char**argv)
 #endif
 #ifdef F3F
 /*
-#ifdef VIDEO_OUTPUT_WINDOW
+#ifdef VIDEO_OUTPUT_FRAME
             char str[32];
             snprintf(str, 32, "Velocity : [%d, %d]", primaryTarget->m_velocity.x, primaryTarget->m_velocity.y);
             writeText(outFrame, string(str));
@@ -692,7 +680,7 @@ int main(int argc, char**argv)
 /*
                 Rect & r = primaryTarget->LatestRect();
                 if(r.tl().x < cx && r.br().x > cx) {
-#ifdef VIDEO_OUTPUT_WINDOW
+#ifdef VIDEO_OUTPUT_FRAME
                     line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
 #endif
 #ifdef F3F_TTY_BASE
@@ -706,7 +694,7 @@ int main(int argc, char**argv)
                     Point p1 = primaryTarget->m_points[s-2];
                     if((p0.x >= cx && p1.x < cx) ||
                         (p0.x <= cx && p1.x > cx)) {
-#ifdef VIDEO_OUTPUT_WINDOW
+#ifdef VIDEO_OUTPUT_FRAME
                         line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
 #endif                        
 #ifdef F3F_TTY_BASE
@@ -717,7 +705,7 @@ int main(int argc, char**argv)
 */
                 if((primaryTarget->m_points[0].x > cx && primaryTarget->LatestPoint().x <= cx) ||
                     (primaryTarget->m_points[0].x < cx && primaryTarget->LatestPoint().x >= cx)) {
-#ifdef VIDEO_OUTPUT_WINDOW
+#ifdef VIDEO_OUTPUT_FRAME
                     line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
 #endif                
 #ifdef F3F_TTY_BASE
@@ -728,21 +716,14 @@ int main(int argc, char**argv)
 #endif
                 }
             }
-#endif            
+#endif  /* F3F */            
         }
-
         //imshow("foreground mask", foregroundMask);
 /*
         bsModel->getBackgroundImage(background);
         if (!background.empty())
             imshow("mean background image", background );
 */
-#ifdef VIDEO_OUTPUT_WINDOW
-        imshow("Out Frame",outFrame);
-#if defined(VIDEO_OUTPUT_FILE_NAME)
-        videoWriterQueue.push(outFrame.clone());
-#endif        
-#endif
 #ifdef VIDEO_OUTPUT_WINDOW
         int k = waitKey(1);
         if(k == 27) {
@@ -753,23 +734,27 @@ int main(int argc, char**argv)
                     break;
             }
         }
+        imshow("Out Frame",outFrame);
+#endif
+#ifdef VIDEO_OUTPUT_FILE_NAME
+        videoWriterQueue.push(outFrame.clone());
 #endif
         if(bShutdown)
             break;
 
         high_resolution_clock::time_point t2(high_resolution_clock::now());
         double dt_us(static_cast<double>(duration_cast<microseconds>(t2 - t1).count()));
-        //std::cout << (dt_us / 1000.0) << " ms" << std::endl;
         std::cout << "FPS : " << fixed  <<  setprecision(2) << (1000000.0 / dt_us) << std::endl;
 
         t1 = high_resolution_clock::now();
     }
 #ifdef JETSON_NANO
     gpioSetValue(greenLED, off);
+    gpioSetValue(redLED, off);
 #endif
     //cap.release();
 
-#if defined(VIDEO_OUTPUT_FILE_NAME)
+#ifdef VIDEO_OUTPUT_FILE_NAME
     videoWriterQueue.cancel();
     outThread.join();
 #endif
