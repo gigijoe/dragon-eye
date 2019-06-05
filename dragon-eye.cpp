@@ -253,8 +253,8 @@ printf("primary target : %d, %d\n", p.x, p.y);
 
 #define JETSON_NANO
 
-#define CAMERA_WIDTH 640
-#define CAMERA_HEIGHT 480
+#define CAMERA_WIDTH 1280
+#define CAMERA_HEIGHT 720
 #define CAMERA_FPS 60
 
 #define MIN_TARGET_WIDTH 16
@@ -271,12 +271,12 @@ printf("primary target : %d, %d\n", p.x, p.y);
 //#define VIDEO_INPUT_FILE "../video/5610.t.mp4"
 //#define VIDEO_INPUT_FILE "../video/580378201.mp4"
 
-//#define VIDEO_OUTPUT_WINDOW
+#define VIDEO_OUTPUT_SCREEN
 
 #define VIDEO_OUTPUT_DIR "./"
 #define VIDEO_OUTPUT_FILE_NAME "result"
 
-#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_WINDOW)
+#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
 #define VIDEO_OUTPUT_FRAME
 #endif
 
@@ -315,6 +315,7 @@ public:
 
     void cancel();
     bool isCancelled() { return cancelled_; }
+    void reset();
 
 private:
     std::queue<cv::Mat> queue_;
@@ -360,13 +361,24 @@ Mat FrameQueue::pop()
     return image;
 }
 
-#ifdef VIDEO_OUTPUT_FILE_NAME
+void FrameQueue::reset()
+{
+    cancelled_ = false;
+}
+
+/*
+*
+*/
+
+#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
 FrameQueue videoWriterQueue;
 
 void VideoWriterThread(int width, int height)
 {    
     Size videoSize = Size((int)width,(int)height);
-    VideoWriter writer;
+    char gstStr[320];
+#ifdef VIDEO_OUTPUT_FILE_NAME
+    VideoWriter outFile;
     char filePath[64];
     int videoOutoutIndex = 0;
     while(videoOutoutIndex < 1000) {
@@ -383,25 +395,52 @@ void VideoWriterThread(int width, int height)
             break; /* File doesn't exist. OK */
     }
 #ifdef JETSON_NANO
-    char gstStr[320];
     snprintf(gstStr, 320, "appsrc ! autovideoconvert ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
         VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
-    writer.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
+    outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
     cout << "Vodeo output " << gstStr << endl;
 #else
-    writer.open(filePath, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
+    outFile.open(filePath, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
     cout << "Vodeo output " << filePath << endl;
 #endif
+#endif //VIDEO_OUTPUT_FILE_NAME
+#ifdef VIDEO_OUTPUT_SCREEN
+#ifdef JETSON_NANO
+    snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
+                   videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
+                   nvvidconv ! video/x-raw(memory:NVMM) ! \
+                   nvoverlaysink sync=false -e ", 30);
+    VideoWriter outScreen;
+    outScreen.open(gstStr, VideoWriter::fourcc('I', '4', '2', '0'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
+#else
+#endif //JETSON_NANO
+#endif //VIDEO_OUTPUT_SCREEN
+    videoWriterQueue.reset();
     try {
         while(1) {
             Mat frame = videoWriterQueue.pop();
-            if(frame.empty())
-                videoWriterQueue.cancel();
-            writer.write(frame);
+#ifdef VIDEO_OUTPUT_FILE_NAME
+            outFile.write(frame);
+#endif
+#ifdef VIDEO_OUTPUT_SCREEN
+#ifdef JETSON_NANO
+            outScreen.write(frame);
+#else
+#endif //JETSON_NANO
+#endif
         }
     } catch (FrameQueue::cancelled & /*e*/) {
         // Nothing more to process, we're done
         std::cout << "FrameQueue " << " cancelled, worker finished." << std::endl;
+#ifdef VIDEO_OUTPUT_FILE_NAME
+        outFile.release();
+#endif
+#ifdef VIDEO_OUTPUT_SCREEN
+#ifdef JETSON_NANO
+        outScreen.release();
+#else
+#endif //JETSON_NANO
+#endif
     }    
 }
 
@@ -471,8 +510,8 @@ int main(int argc, char**argv)
 #ifdef JETSON_NANO
     /* export GST_DEBUG=2 to show debug message */
     snprintf(gstStr, 320, "nvarguscamerasrc ! video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e", CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-
+        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
     VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
 #else
     VideoCapture cap(index);
@@ -510,9 +549,7 @@ int main(int argc, char**argv)
             printf("Error read camera frame ...\n");
     }
 #endif
-
-#ifdef VIDEO_OUTPUT_FILE_NAME
-    //thread outThread(&VideoWriterThread, capFrame.cols, capFrame.rows);
+#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
     thread outThread;
 #endif
     //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorKNN();
@@ -559,7 +596,7 @@ int main(int argc, char**argv)
 
         if(gv == 1 && vPushButton == 0) { /* Raising edge */
             bPause = !bPause;
-#ifdef VIDEO_OUTPUT_FILE_NAME
+#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
             if(bPause) {
                 cout << "Paused ..." << endl;
                 videoWriterQueue.cancel();
@@ -745,7 +782,7 @@ int main(int argc, char**argv)
         if (!background.empty())
             imshow("mean background image", background );
 */
-#ifdef VIDEO_OUTPUT_WINDOW
+#ifdef VIDEO_OUTPUT_SCREEN
         int k = waitKey(1);
         if(k == 27) {
             break;
@@ -755,9 +792,12 @@ int main(int argc, char**argv)
                     break;
             }
         }
+#ifdef JETSON_NANO
+#else        
         imshow("Out Frame",outFrame);
 #endif
-#ifdef VIDEO_OUTPUT_FILE_NAME
+#endif
+#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
         videoWriterQueue.push(outFrame.clone());
 #endif
         if(bShutdown)
@@ -775,7 +815,7 @@ int main(int argc, char**argv)
 #endif
     //cap.release();
 
-#ifdef VIDEO_OUTPUT_FILE_NAME
+#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
     if(bPause == false) {
         videoWriterQueue.cancel();
         outThread.join();
