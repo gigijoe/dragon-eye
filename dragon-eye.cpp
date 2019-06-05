@@ -273,7 +273,7 @@ printf("primary target : %d, %d\n", p.x, p.y);
 
 #define VIDEO_OUTPUT_SCREEN
 
-#define VIDEO_OUTPUT_DIR "./"
+#define VIDEO_OUTPUT_DIR "."
 #define VIDEO_OUTPUT_FILE_NAME "result"
 
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
@@ -396,8 +396,10 @@ void VideoWriterThread(int width, int height)
     }
 #ifdef JETSON_NANO
     /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
-    snprintf(gstStr, 320, "appsrc ! autovideoconvert ! nvvidconv flip-method=1 ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
-        VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
+    snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
+                   videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
+                   nvvidconv flip-method=1 ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
+        30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
     outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
     cout << "Vodeo output " << gstStr << endl;
 #else
