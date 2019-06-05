@@ -395,7 +395,8 @@ void VideoWriterThread(int width, int height)
             break; /* File doesn't exist. OK */
     }
 #ifdef JETSON_NANO
-    snprintf(gstStr, 320, "appsrc ! autovideoconvert ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
+    /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
+    snprintf(gstStr, 320, "appsrc ! autovideoconvert ! nvvidconv flip-method=1 ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
         VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
     outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
     cout << "Vodeo output " << gstStr << endl;
@@ -579,8 +580,10 @@ int main(int argc, char**argv)
         if(bShutdown)
             return 0;
     }
-    cx = (capFrame.cols / 2) - 1;
-    cy = capFrame.rows-1;
+//    cx = (capFrame.cols / 2) - 1;
+//    cy = capFrame.rows-1;
+    cx = capFrame.cols - 1;
+    cy = (capFrame.rows / 2) - 1;
 #endif
 
     high_resolution_clock::time_point t1(high_resolution_clock::now());
@@ -626,7 +629,8 @@ int main(int argc, char**argv)
 #ifdef VIDEO_OUTPUT_FRAME
         capFrame.copyTo(outFrame);
 #ifdef F3F
-        line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 255, 0), 1);
+        //line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 255, 0), 1);
+        line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
 #endif
 #endif
         int erosion_size = 16;   
@@ -735,36 +739,13 @@ int main(int argc, char**argv)
 #endif
 */
             if(primaryTarget->ArcLength() > 16) {
-/*
-                Rect & r = primaryTarget->LatestRect();
-                if(r.tl().x < cx && r.br().x > cx) {
+//                if((primaryTarget->m_points[0].x > cx && primaryTarget->LatestPoint().x <= cx) ||
+//                    (primaryTarget->m_points[0].x < cx && primaryTarget->LatestPoint().x >= cx)) {
+                if((primaryTarget->m_points[0].y > cy && primaryTarget->LatestPoint().y <= cy) ||
+                    (primaryTarget->m_points[0].y < cy && primaryTarget->LatestPoint().y >= cy)) {
 #ifdef VIDEO_OUTPUT_FRAME
-                    line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
-#endif
-#ifdef F3F_TTY_BASE
-                    base_toggle(ttyFd);
-#endif
-                }
-                
-                size_t s = primaryTarget->m_points.size();
-                if(s > 1) {
-                    Point p0 = primaryTarget->m_points[s-1];
-                    Point p1 = primaryTarget->m_points[s-2];
-                    if((p0.x >= cx && p1.x < cx) ||
-                        (p0.x <= cx && p1.x > cx)) {
-#ifdef VIDEO_OUTPUT_FRAME
-                        line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
-#endif                        
-#ifdef F3F_TTY_BASE
-                    base_toggle(ttyFd);
-#endif
-                    }
-                }
-*/
-                if((primaryTarget->m_points[0].x > cx && primaryTarget->LatestPoint().x <= cx) ||
-                    (primaryTarget->m_points[0].x < cx && primaryTarget->LatestPoint().x >= cx)) {
-#ifdef VIDEO_OUTPUT_FRAME
-                    line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
+//                    line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
+                    line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
 #endif                
 #ifdef F3F_TTY_BASE
         		    base_toggle(ttyFd);
