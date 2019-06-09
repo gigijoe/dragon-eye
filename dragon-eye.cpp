@@ -96,13 +96,20 @@ static void set_blocking (int fd, int should_block)
 
 #define BASE_B
 
-static void base_toggle (int fd) 
+static void base_toggle(int fd, uint64_t frameNo) 
 {
-    static uint8_t serNo = 0;
+    static uint8_t serNo = 0x3f;
+    static uint64_t lastFrameNo = 0;
     uint8_t data[1];
 
     if(!fd)
         return;
+
+    if(frameNo - lastFrameNo > 6) { /* Not been triggled for over 6 frames is the same triggle. Keep serNo steady. */
+        if(++serNo > 0x3f)
+            serNo = 0;
+    }
+    lastFrameNo = frameNo;
 
 #ifdef BASE_A
     data[0] = (serNo & 0x3f);
@@ -113,9 +120,6 @@ static void base_toggle (int fd)
     printf("BASE_B[%d]\r\n", serNo);
 #endif
     write(fd, data, 1);
-
-    if(++serNo > 0x3f)
-        serNo = 0;
 }
 
 /*
@@ -271,9 +275,9 @@ printf("primary target : %d, %d\n", p.x, p.y);
 //#define VIDEO_INPUT_FILE "../video/5610.t.mp4"
 //#define VIDEO_INPUT_FILE "../video/580378201.mp4"
 
-#define VIDEO_OUTPUT_SCREEN
+//#define VIDEO_OUTPUT_SCREEN
 
-#define VIDEO_OUTPUT_DIR "."
+#define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
 #define VIDEO_OUTPUT_FILE_NAME "result"
 
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
@@ -327,8 +331,6 @@ private:
 void FrameQueue::cancel()
 {
     std::unique_lock<std::mutex> mlock(mutex_);
-    while(!queue_.empty())
-        queue_.pop();
     cancelled_ = true;
     cond_.notify_all();
 }
@@ -472,8 +474,6 @@ int main(int argc, char**argv)
     gpioSetValue(greenLED, on);
 
     gpioSetDirection(pushButton, inputPin); /* Pause / Restart */
-    //unsigned int value;
-    //gpioGetValue(pushButton, &value);
 #endif
 #ifdef F3F_TTY_BASE
     const char *ttyName = "/dev/ttyTHS1";
@@ -591,7 +591,7 @@ int main(int argc, char**argv)
     high_resolution_clock::time_point t1(high_resolution_clock::now());
 
 #ifdef JETSON_NANO
-    unsigned int frameCount = 0;
+    uint64_t frameCount = 0;
     unsigned int vPushButton = 0;
 #endif
     while(cap.read(capFrame)) {
@@ -618,7 +618,7 @@ int main(int argc, char**argv)
             if(bShutdown)
                 break;
             gpioSetValue(redLED, off);
-            gpioSetValue(greenLED, off);
+            gpioSetValue(greenLED, on);
             continue;
         }
 
@@ -750,7 +750,7 @@ int main(int argc, char**argv)
                     line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
 #endif                
 #ifdef F3F_TTY_BASE
-        		    base_toggle(ttyFd);
+        		    base_toggle(ttyFd, frameCount);
 #endif
 #ifdef JETSON_NANO
                     gpioSetValue(redLED, on);
