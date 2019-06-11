@@ -156,23 +156,15 @@ public:
 
     vector< Rect > m_rects;
     vector< Point > m_points;
-#if 0
     Point m_velocity;
-#endif
 
     void Update(Rect & roi, unsigned long frameTick) {
         if(m_rects.size() > 0)
             m_arcLength += norm(roi.tl() - m_rects.back().tl());
-#if 0        
-        if(m_points.size() == 1) {
+        if(m_points.size() > 1) {
             m_velocity.x = (roi.tl().x - m_rects.back().tl().x);
             m_velocity.y = (roi.tl().y - m_rects.back().tl().y);
-        } else if(m_points.size() > 1) {
-            m_velocity.x = (m_velocity.x + (roi.tl().x - m_rects.back().tl().x)) / 2;
-            m_velocity.y = (m_velocity.y + (roi.tl().y - m_rects.back().tl().y)) / 2;
         }
-        //printf("Velocity : [%d, %d]\n", m_velocity.x, m_velocity.y);
-#endif
         m_rects.push_back(roi);
         m_points.push_back(roi.tl());
         m_frameTick = frameTick;
@@ -184,7 +176,7 @@ public:
     inline Point & LatestPoint() { return m_points.back(); }
 };
 
-#define MAX_NUM_FRAME_MISSING_TARGET 6 
+#define MAX_NUM_FRAME_MISSING_TARGET 30
 
 class Tracker
 {
@@ -200,8 +192,13 @@ public:
         for(list< Target >::iterator t=m_targets.begin();t!=m_targets.end();) {
             int i;
             for(i=0; i<roiRect.size(); i++) {
-                if((t->m_rects.back() & roiRect[i]).area() > 0) /* Target tracked ... */
-                    break;;
+                Rect r = t->m_rects.back();
+                if((r & roiRect[i]).area() > 0) /* Target tracked ... */
+                    break;                
+                r.x += t->m_velocity.x;
+                r.y += t->m_velocity.y;
+                if((r & roiRect[i]).area() > 0) /* Target tracked with velocity ... */
+                    break;
             }
             if(i == roiRect.size()) { /* Target missing ... */
                 if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) { /* Target still missing for over 6 frames */
@@ -219,7 +216,14 @@ printf("lost target : %d, %d\n", p.x, p.y);
         for(int i=0; i<roiRect.size(); i++) {
             list< Target >::iterator t;
             for(t=m_targets.begin();t!=m_targets.end();) {
-                if((t->m_rects.back() & roiRect[i]).area() > 0) { /* Next step tracked ... */
+                Rect r = t->m_rects.back();
+                if((r & roiRect[i]).area() > 0) { /* Next step tracked ... */
+                    t->Update(roiRect[i], m_frameTick);
+                    break;
+                }
+                r.x += t->m_velocity.x;
+                r.y += t->m_velocity.y;
+                if((r & roiRect[i]).area() > 0) { /* Next step tracked with velocity ... */
                     t->Update(roiRect[i], m_frameTick);
                     break;
                 }
@@ -282,6 +286,7 @@ printf("primary target : %d, %d\n", p.x, p.y);
 
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
 #define VIDEO_OUTPUT_FRAME
+//#define VIDEO_OUTPUT_CAP_FRAME
 #endif
 
 #define VIDEO_FRAME_DROP 30
@@ -357,7 +362,6 @@ Mat FrameQueue::pop()
             throw cancelled();
         }
     }
-
     Mat image(queue_.front());
     queue_.pop();
     return image;
@@ -582,8 +586,6 @@ int main(int argc, char**argv)
         if(bShutdown)
             return 0;
     }
-//    cx = (capFrame.cols / 2) - 1;
-//    cy = capFrame.rows-1;
     cx = capFrame.cols - 1;
     cy = (capFrame.rows / 2) - 1;
 #endif
@@ -635,7 +637,7 @@ int main(int argc, char**argv)
         line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
 #endif
 #endif
-        int erosion_size = 16;   
+        int erosion_size = 6;   
         Mat element = cv::getStructuringElement(cv::MORPH_RECT,
                           cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
                           cv::Point(erosion_size, erosion_size) );
@@ -648,13 +650,11 @@ int main(int argc, char**argv)
         erode(frame, frame, element);
         gpuFrame.upload(frame);	
 #endif    
-        // pass the frame to background bsModel
         bsModel->apply(gpuFrame, gpuForegroundMask, doUpdateModel ? -1 : 0);
 
         if(gaussianFilter.empty())
             gaussianFilter = cuda::createGaussianFilter(gpuForegroundMask.type(), gpuForegroundMask.type(), Size(5, 5), 3.5);
 
-        // show foreground image and mask (with optional smoothing)
         if(doSmoothMask) {
             gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
             cuda::threshold(gpuForegroundMask, gpuForegroundMask, 40.0, 255.0, THRESH_BINARY);
@@ -741,8 +741,6 @@ int main(int argc, char**argv)
 #endif
 */
             if(primaryTarget->ArcLength() > 16) {
-//                if((primaryTarget->m_points[0].x > cx && primaryTarget->LatestPoint().x <= cx) ||
-//                    (primaryTarget->m_points[0].x < cx && primaryTarget->LatestPoint().x >= cx)) {
                 if((primaryTarget->m_points[0].y > cy && primaryTarget->LatestPoint().y <= cy) ||
                     (primaryTarget->m_points[0].y < cy && primaryTarget->LatestPoint().y >= cy)) {
 #ifdef VIDEO_OUTPUT_FRAME
@@ -781,7 +779,11 @@ int main(int argc, char**argv)
 #endif
 #endif
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
+#ifdef VIDEO_OUTPUT_CAP_FRAME
+        videoWriterQueue.push(capFrame.clone());
+#else
         videoWriterQueue.push(outFrame.clone());
+#endif
 #endif
         if(bShutdown)
             break;
@@ -796,8 +798,6 @@ int main(int argc, char**argv)
     gpioSetValue(greenLED, off);
     gpioSetValue(redLED, off);
 #endif
-    //cap.release();
-
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
     if(bPause == false) {
         videoWriterQueue.cancel();
