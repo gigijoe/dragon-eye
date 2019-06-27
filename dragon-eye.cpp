@@ -289,7 +289,7 @@ printf("primary target : %d, %d\n", p.x, p.y);
 //#define VIDEO_OUTPUT_CAP_FRAME
 #endif
 
-#define VIDEO_FRAME_DROP 30
+//#define VIDEO_FRAME_DROP 30
 
 //#define ENABLE_MULTI_TARGET
 #define F3F
@@ -401,17 +401,24 @@ void VideoWriterThread(int width, int height)
             break; /* File doesn't exist. OK */
     }
 #ifdef JETSON_NANO
+#ifdef VIDEO_INPUT_FILE
+    snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
+                   videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
+                   nvvidconv ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
+        30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
+#else
     /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
     snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
                    nvvidconv flip-method=1 ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
         30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
+#endif //VIDEO_INPUT_FILE
     outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
     cout << "Vodeo output " << gstStr << endl;
 #else
     outFile.open(filePath, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
     cout << "Vodeo output " << filePath << endl;
-#endif
+#endif //JETSON_NANO
 #endif //VIDEO_OUTPUT_FILE_NAME
 #ifdef VIDEO_OUTPUT_SCREEN
 #ifdef JETSON_NANO
@@ -550,11 +557,13 @@ int main(int argc, char**argv)
     cout << "Video input (" << static_cast<int32_t>(cap.get(CAP_PROP_FRAME_WIDTH)) << "x" << static_cast<int32_t>(cap.get(CAP_PROP_FRAME_HEIGHT))
         << ") at " << cap.get(CAP_PROP_FPS) << " FPS." << endl;
 #endif
+#if 0        
     cout << "Drop first " << VIDEO_FRAME_DROP << " for camera stable ..." << endl;
     for(int i=0;i<VIDEO_FRAME_DROP;i++) {
         if(!cap.read(capFrame))
             printf("Error read camera frame ...\n");
     }
+#endif
 #endif
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
     thread outThread;
@@ -586,8 +595,13 @@ int main(int argc, char**argv)
         if(bShutdown)
             return 0;
     }
+#ifdef VIDEO_INPUT_FILE
+    cx = (capFrame.cols / 2) - 1;
+    cy = capFrame.rows - 1;
+#else
     cx = capFrame.cols - 1;
     cy = (capFrame.rows / 2) - 1;
+#endif
 #endif
 
     high_resolution_clock::time_point t1(high_resolution_clock::now());
@@ -633,10 +647,13 @@ int main(int argc, char**argv)
 #ifdef VIDEO_OUTPUT_FRAME
         capFrame.copyTo(outFrame);
 #ifdef F3F
-        //line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 255, 0), 1);
+#ifdef VIDEO_INPUT_FILE
+        line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 255, 0), 1);
+#else
         line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
-#endif
-#endif
+#endif //VIDEO_INPUT_FILE
+#endif //F3F
+#endif //VIDEO_OUTPUT_FRAME
         int erosion_size = 6;   
         Mat element = cv::getStructuringElement(cv::MORPH_RECT,
                           cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
@@ -741,12 +758,20 @@ int main(int argc, char**argv)
 #endif
 */
             if(primaryTarget->ArcLength() > 16) {
+#ifdef VIDEO_INPUT_FILE
+                if((primaryTarget->m_points[0].x > cx && primaryTarget->LatestPoint().x <= cx) ||
+                    (primaryTarget->m_points[0].x < cx && primaryTarget->LatestPoint().x >= cx)) {
+#else
                 if((primaryTarget->m_points[0].y > cy && primaryTarget->LatestPoint().y <= cy) ||
                     (primaryTarget->m_points[0].y < cy && primaryTarget->LatestPoint().y >= cy)) {
+#endif //VIDEO_INPUT_FILE
 #ifdef VIDEO_OUTPUT_FRAME
-//                    line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
+#ifdef VIDEO_INPUT_FILE
+                    line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
+#else
                     line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
-#endif                
+#endif //VIDEO_INPUT_FILE
+#endif //VIDEO_OUTPUT_FRAME               
 #ifdef F3F_TTY_BASE
         		    base_toggle(ttyFd, frameCount);
 #endif
