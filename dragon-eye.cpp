@@ -49,6 +49,7 @@ static int set_interface_attribs (int fd, int speed, int parity)
 
     cfsetospeed (&tty, speed);
     cfsetispeed (&tty, speed);
+    cfmakeraw(&tty); /* RAW mode */
 
     tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;     // 8-bit chars
     // disable IGNBRK for mismatched speed tests; otherwise receive break
@@ -161,10 +162,21 @@ public:
     void Update(Rect & roi, unsigned long frameTick) {
         if(m_rects.size() > 0)
             m_arcLength += norm(roi.tl() - m_rects.back().tl());
+#if 0
         if(m_points.size() > 1) {
             m_velocity.x = (roi.tl().x - m_rects.back().tl().x);
             m_velocity.y = (roi.tl().y - m_rects.back().tl().y);
         }
+#else        
+        if(m_points.size() == 1) {
+            m_velocity.x = (roi.tl().x - m_rects.back().tl().x);
+            m_velocity.y = (roi.tl().y - m_rects.back().tl().y);
+        } else if(m_points.size() > 1) {
+            m_velocity.x = (m_velocity.x + (roi.tl().x - m_rects.back().tl().x)) / 2;
+            m_velocity.y = (m_velocity.y + (roi.tl().y - m_rects.back().tl().y)) / 2;
+        }
+        //printf("Velocity : [%d, %d]\n", m_velocity.x, m_velocity.y);
+#endif
         m_rects.push_back(roi);
         m_points.push_back(roi.tl());
         m_frameTick = frameTick;
@@ -176,7 +188,12 @@ public:
     inline Point & LatestPoint() { return m_points.back(); }
 };
 
-#define MAX_NUM_FRAME_MISSING_TARGET 30
+static inline bool TargetSort(Target & a, Target & b)
+{
+    return a.LatestRect().area() > b.LatestRect().area();
+}
+
+#define MAX_NUM_FRAME_MISSING_TARGET 15
 
 class Tracker
 {
@@ -188,20 +205,22 @@ public:
 
     list< Target > m_targets;
 
-    void Update(vector< Rect > & roiRect) {
-        for(list< Target >::iterator t=m_targets.begin();t!=m_targets.end();) {
+    void Update(Mat & frame, vector< Rect > & roiRect) {
+        for(list< Target >::iterator t=m_targets.begin();t!=m_targets.end();) { /* Try to find lost targets */
             int i;
             for(i=0; i<roiRect.size(); i++) {
                 Rect r = t->m_rects.back();
                 if((r & roiRect[i]).area() > 0) /* Target tracked ... */
                     break;                
-                r.x += t->m_velocity.x;
-                r.y += t->m_velocity.y;
+
+                unsigned long f = m_frameTick - t->FrameTick();
+                r.x += t->m_velocity.x * f;
+                r.y += t->m_velocity.y * f;
                 if((r & roiRect[i]).area() > 0) /* Target tracked with velocity ... */
                     break;
             }
             if(i == roiRect.size()) { /* Target missing ... */
-                if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) { /* Target still missing for over 6 frames */
+                if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) { /* Target still missing for over X frames */
 #ifdef DEBUG            
 Point p = t->m_points.back();
 printf("lost target : %d, %d\n", p.x, p.y);
@@ -213,33 +232,49 @@ printf("lost target : %d, %d\n", p.x, p.y);
             t++;
         }
 
-        for(int i=0; i<roiRect.size(); i++) {
+        for(int i=0; i<roiRect.size(); i++) { /* Try to find NEW target for tracking ... */
             list< Target >::iterator t;
-            for(t=m_targets.begin();t!=m_targets.end();) {
+            for(t=m_targets.begin();t!=m_targets.end();t++) {
                 Rect r = t->m_rects.back();
                 if((r & roiRect[i]).area() > 0) { /* Next step tracked ... */
                     t->Update(roiRect[i], m_frameTick);
                     break;
                 }
-                r.x += t->m_velocity.x;
-                r.y += t->m_velocity.y;
+
+                unsigned long f = m_frameTick - t->FrameTick();
+                r.x += t->m_velocity.x * f;
+                r.y += t->m_velocity.y * f;
                 if((r & roiRect[i]).area() > 0) { /* Next step tracked with velocity ... */
                     t->Update(roiRect[i], m_frameTick);
                     break;
                 }
-                t++;
             }
             if(t == m_targets.end()) { /* New target */
-                m_targets.push_back(Target(roiRect[i], m_frameTick));
+                for(t=m_targets.begin();t!=m_targets.end();t++) { /* Check if exist target */
+                    Rect r = t->m_rects.back();
+                    unsigned long f = m_frameTick - t->FrameTick();
+                    r.x += t->m_velocity.x * f;
+                    r.y += t->m_velocity.y * f;
+#if 1
+                    if(cv::norm(r.tl()-roiRect[i].tl()) < 120) { /* Target tracked with Euclidean distance ... */
+                        t->Update(roiRect[i], m_frameTick);
+                        break;
+                    }
+#endif
+                }
+                if(t == m_targets.end()) { /* New target */
+                    m_targets.push_back(Target(roiRect[i], m_frameTick));
 #ifdef DEBUG            
 printf("new target : %d, %d\n", roiRect[i].tl().x, roiRect[i].tl().y);
 #endif
+                }
             }
         }
         m_frameTick++;
     }
 
     Target *PrimaryTarget() {
+#if 0        
         double trackingArcLength = 0;
         list< Target >::iterator it = m_targets.end();
         for(list< Target >::iterator t=m_targets.begin();t!=m_targets.end();t++) {
@@ -256,6 +291,13 @@ printf("primary target : %d, %d\n", p.x, p.y);
             return &(*it);
         }
         return 0;
+#else
+        if(m_targets.size() == 0)
+            return 0;
+
+        m_targets.sort(TargetSort);
+        return &m_targets.front();
+#endif
     }
 };
 
@@ -265,10 +307,12 @@ printf("primary target : %d, %d\n", p.x, p.y);
 #define CAMERA_HEIGHT 720
 #define CAMERA_FPS 60
 
-#define MIN_TARGET_WIDTH 16
-#define MIN_TARGET_HEIGHT 16
+#define MIN_TARGET_WIDTH 12
+#define MIN_TARGET_HEIGHT 12
 #define MAX_TARGET_WIDTH 320
-#define MAX_TARGET_HEIGHT 240
+#define MAX_TARGET_HEIGHT 320
+
+#define MAX_NUM_TARGET 3
 
 //#define VIDEO_INPUT_FILE "../video/84598.t.mp4"
 //#define VIDEO_INPUT_FILE "../video/84599.t.mp4"
@@ -279,26 +323,24 @@ printf("primary target : %d, %d\n", p.x, p.y);
 //#define VIDEO_INPUT_FILE "../video/5610.t.mp4"
 //#define VIDEO_INPUT_FILE "../video/580378201.mp4"
 
-//#define VIDEO_OUTPUT_SCREEN
+#define VIDEO_OUTPUT_SCREEN
 
 #define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
-#define VIDEO_OUTPUT_FILE_NAME "result"
+//#define VIDEO_OUTPUT_FILE_NAME "result"
 
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
-#define VIDEO_OUTPUT_FRAME
-//#define VIDEO_OUTPUT_CAP_FRAME
+//#define VIDEO_OUTPUT_FRAME
+#define VIDEO_OUTPUT_CAP_FRAME
 #endif
 
 //#define VIDEO_FRAME_DROP 30
 
-//#define ENABLE_MULTI_TARGET
 #define F3F
 #ifdef JETSON_NANO
 #define F3F_TTY_BASE
 #endif
 
-#define MAX_NUM_CONTOURS 16
-#define MAX_NUM_TARGET 4
+//#define MAX_NUM_CONTOURS 16
 
 static bool bShutdown = false;
 static bool bPause = true;
@@ -342,10 +384,12 @@ void FrameQueue::cancel()
 
 void FrameQueue::push(cv::Mat const & image)
 {
+    while(queue_.size() > 30) { /* Prevent memory overflow ... */
+        usleep(1000); /* Wait for 1 ms */
+    }
+
     std::unique_lock<std::mutex> mlock(mutex_);
     queue_.push(image);
-    while(queue_.size() > 16) /* Maximum Q size is 16 ... */
-        queue_.pop();
     cond_.notify_one();
 }
 
@@ -570,7 +614,7 @@ int main(int argc, char**argv)
 #endif
     //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorKNN();
     //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorMOG2();
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2();
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(30, 16, false);
 
     bool doUpdateModel = true;
     bool doSmoothMask = true;
@@ -615,7 +659,13 @@ int main(int argc, char**argv)
         unsigned int gv;
         gpioGetValue(pushButton, &gv);
 
+        frameCount++;
+
         if(gv == 1 && vPushButton == 0) { /* Raising edge */
+            if(frameCount < 30) {
+                usleep(1000);
+                continue;
+            }
             bPause = !bPause;
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
             if(bPause) {
@@ -626,6 +676,7 @@ int main(int argc, char**argv)
                 cout << "Restart ..." << endl;
                 outThread = thread(&VideoWriterThread, capFrame.cols, capFrame.rows);
             }
+            frameCount = 0;
 #endif
         }
         vPushButton = gv;
@@ -635,10 +686,11 @@ int main(int argc, char**argv)
                 break;
             gpioSetValue(redLED, off);
             gpioSetValue(greenLED, on);
+            usleep(1000);
             continue;
         }
 
-        if(frameCount++ % 2 == 0)
+        if(frameCount % 2 == 0)
             gpioSetValue(greenLED, on);
         else
             gpioSetValue(greenLED, off);
@@ -674,7 +726,7 @@ int main(int argc, char**argv)
 
         if(doSmoothMask) {
             gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
-            cuda::threshold(gpuForegroundMask, gpuForegroundMask, 40.0, 255.0, THRESH_BINARY);
+            //cuda::threshold(gpuForegroundMask, gpuForegroundMask, 40.0, 255.0, THRESH_BINARY);
             
 			/* Erode & Dilate */
             int erosion_size = 6;   
@@ -715,7 +767,7 @@ int main(int argc, char**argv)
                 boundRect[i].height > MIN_TARGET_HEIGHT &&
     			boundRect[i].width <= MAX_TARGET_WIDTH && 
                 boundRect[i].height <= MAX_TARGET_HEIGHT) {
-#if 1
+#if 0
                 if(primaryTarget && contours.size() > MAX_NUM_CONTOURS ) { /* Too many objects */
                     /* if primary target exist, try to track it ONLY and ignore others ... */
                     if((primaryTarget->LatestRect() & boundRect[i]).area() > 0) /* Primagy target tracked ... */
@@ -723,17 +775,17 @@ int main(int argc, char**argv)
                 } else
 #endif
                     roiRect.push_back(boundRect[i]);
-#ifdef ENABLE_MULTI_TARGET                
 #ifdef VIDEO_OUTPUT_FRAME
             Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
             rectangle( outFrame, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0 );
-#endif
 #endif
     		}
             if(roiRect.size() >= MAX_NUM_TARGET) /* Deal top 5 only */
                 break;
     	}
-        tracker.Update(roiRect);
+
+        tracker.Update(frame, roiRect);
+
 #ifdef JETSON_NANO
         gpioSetValue(redLED, off);
 #endif
@@ -788,7 +840,7 @@ int main(int argc, char**argv)
         if (!background.empty())
             imshow("mean background image", background );
 */
-#ifdef VIDEO_OUTPUT_SCREEN
+#if 0
         int k = waitKey(1);
         if(k == 27) {
             break;
