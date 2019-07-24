@@ -73,6 +73,8 @@ using std::chrono::microseconds;
 #define F3F_TTY_BASE
 #endif
 
+#define BASE_B
+
 //#define MAX_NUM_CONTOURS 16
 
 static bool bShutdown = false;
@@ -147,8 +149,6 @@ static void set_blocking (int fd, int should_block)
     if (tcsetattr (fd, TCSANOW, &tty) != 0)
             printf ("error %d setting term attributes\n", errno);
 }
-
-#define BASE_B
 
 static void base_trigger(int fd, uint64_t frameNo) 
 {
@@ -681,7 +681,7 @@ int main(int argc, char**argv)
 
 #ifdef F3F_TTY_BASE
         uint8_t data[1];
-        int r = read(fd, data, 1); /* Receive trigger from f3f timer */
+        int r = read(ttyFd, data, 1); /* Receive trigger from f3f timer */
         if(r == 1) {
 #ifdef BASE_A
             if((data[0] & 0xc0) == 0x00) {
