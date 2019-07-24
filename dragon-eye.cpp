@@ -29,9 +29,62 @@ using namespace std;
 extern "C" {
 #include "jetsonGPIO/jetsonGPIO.h"
 }
+
 using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
+
+#define JETSON_NANO
+
+#define CAMERA_WIDTH 1280
+#define CAMERA_HEIGHT 720
+#define CAMERA_FPS 60
+
+#define MIN_TARGET_WIDTH 12
+#define MIN_TARGET_HEIGHT 12
+#define MAX_TARGET_WIDTH 320
+#define MAX_TARGET_HEIGHT 320
+
+#define MAX_NUM_TARGET 3
+
+//#define VIDEO_INPUT_FILE "../video/84598.t.mp4"
+//#define VIDEO_INPUT_FILE "../video/84599.t.mp4"
+//#define VIDEO_INPUT_FILE "../video/84600.t.mp4"
+//#define VIDEO_INPUT_FILE "../video/580284764.mp4"
+//#define VIDEO_INPUT_FILE "../video/5609.t.mp4"
+//#define VIDEO_INPUT_FILE "../video/580285079.mp4"
+//#define VIDEO_INPUT_FILE "../video/5610.t.mp4"
+//#define VIDEO_INPUT_FILE "../video/580378201.mp4"
+
+#define VIDEO_OUTPUT_SCREEN
+
+#define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
+//#define VIDEO_OUTPUT_FILE_NAME "result"
+
+#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
+#define VIDEO_OUTPUT_FRAME
+//#define VIDEO_OUTPUT_CAP_FRAME
+#endif
+
+//#define VIDEO_FRAME_DROP 30
+
+#define F3F
+#ifdef JETSON_NANO
+#define F3F_TTY_BASE
+#endif
+
+//#define MAX_NUM_CONTOURS 16
+
+static bool bShutdown = false;
+static bool bPause = true;
+
+void sig_handler(int signo)
+{
+    if(signo == SIGINT) {
+        printf("SIGINT\n");
+        bShutdown = true;
+    }
+}
 
 /*
 *
@@ -97,7 +150,7 @@ static void set_blocking (int fd, int should_block)
 
 #define BASE_B
 
-static void base_toggle(int fd, uint64_t frameNo) 
+static void base_trigger(int fd, uint64_t frameNo) 
 {
     static uint8_t serNo = 0x3f;
     static uint64_t lastFrameNo = 0;
@@ -147,9 +200,10 @@ class Target
 protected:
     double m_arcLength;
     unsigned long m_frameTick;
+    uint8_t m_toggleCount;
 
 public:
-    Target(Rect & roi, unsigned long frameTick) : m_arcLength(0), m_frameTick(frameTick) {
+    Target(Rect & roi, unsigned long frameTick) : m_arcLength(0), m_frameTick(frameTick), m_toggleCount(0) {
         m_rects.push_back(roi);
         m_points.push_back(roi.tl());
         m_frameTick = frameTick;
@@ -186,6 +240,8 @@ public:
     inline unsigned long FrameTick() { return m_frameTick; }
     inline Rect & LatestRect() { return m_rects.back(); }
     inline Point & LatestPoint() { return m_points.back(); }
+    inline void Toggle() { m_toggleCount++; }
+    inline uint8_t ToggleCount() { return m_toggleCount; }
 };
 
 static inline bool TargetSort(Target & a, Target & b)
@@ -301,57 +357,9 @@ printf("primary target : %d, %d\n", p.x, p.y);
     }
 };
 
-#define JETSON_NANO
-
-#define CAMERA_WIDTH 1280
-#define CAMERA_HEIGHT 720
-#define CAMERA_FPS 60
-
-#define MIN_TARGET_WIDTH 12
-#define MIN_TARGET_HEIGHT 12
-#define MAX_TARGET_WIDTH 320
-#define MAX_TARGET_HEIGHT 320
-
-#define MAX_NUM_TARGET 3
-
-//#define VIDEO_INPUT_FILE "../video/84598.t.mp4"
-//#define VIDEO_INPUT_FILE "../video/84599.t.mp4"
-//#define VIDEO_INPUT_FILE "../video/84600.t.mp4"
-//#define VIDEO_INPUT_FILE "../video/580284764.mp4"
-//#define VIDEO_INPUT_FILE "../video/5609.t.mp4"
-//#define VIDEO_INPUT_FILE "../video/580285079.mp4"
-//#define VIDEO_INPUT_FILE "../video/5610.t.mp4"
-//#define VIDEO_INPUT_FILE "../video/580378201.mp4"
-
-#define VIDEO_OUTPUT_SCREEN
-
-#define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
-//#define VIDEO_OUTPUT_FILE_NAME "result"
-
-#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
-//#define VIDEO_OUTPUT_FRAME
-#define VIDEO_OUTPUT_CAP_FRAME
-#endif
-
-//#define VIDEO_FRAME_DROP 30
-
-#define F3F
-#ifdef JETSON_NANO
-#define F3F_TTY_BASE
-#endif
-
-//#define MAX_NUM_CONTOURS 16
-
-static bool bShutdown = false;
-static bool bPause = true;
-
-void sig_handler(int signo)
-{
-    if(signo == SIGINT) {
-        printf("SIGINT\n");
-        bShutdown = true;
-    }
-}
+/*
+*
+*/
 
 class FrameQueue
 {
@@ -509,10 +517,10 @@ void VideoWriterThread(int width, int height)
 int main(int argc, char**argv)
 {
 #ifdef JETSON_NANO
-    jetsonNanoGPIONumber greenLED = gpio16;     // Ouput
-    jetsonNanoGPIONumber redLED = gpio17;     // Ouput
+    jetsonNanoGPIONumber redLED = gpio16; // Ouput
+    jetsonNanoGPIONumber greenLED = gpio17; // Ouput
 
-    jetsonNanoGPIONumber pushButton = gpio18;
+    jetsonNanoGPIONumber pushButton = gpio18; // Input
 
     /* 
     * Do enable GPIO by /etc/profile.d/export-gpio.sh 
@@ -652,7 +660,7 @@ int main(int argc, char**argv)
 
 #ifdef JETSON_NANO
     uint64_t frameCount = 0;
-    unsigned int vPushButton = 0;
+    unsigned int vPushButton = 1; /* Initial high */
 #endif
     while(cap.read(capFrame)) {
 #ifdef JETSON_NANO
@@ -662,11 +670,41 @@ int main(int argc, char**argv)
         frameCount++;
 
         if(gv == 1 && vPushButton == 0) { /* Raising edge */
-            if(frameCount < 30) {
+            if(frameCount < 30) { /* Button debunce */
                 usleep(1000);
                 continue;
             }
             bPause = !bPause;
+            frameCount = 0;
+        }
+        vPushButton = gv;
+
+#ifdef F3F_TTY_BASE
+        uint8_t data[1];
+        int r = read(fd, data, 1); /* Receive trigger from f3f timer */
+        if(r == 1) {
+#ifdef BASE_A
+            if((data[0] & 0xc0) == 0x00) {
+#endif
+#ifdef BASE_B
+            if((data[0] & 0xc0) == 0x40) {
+#endif
+                uint8_t v = data[0] & 0x3f;
+                if(v == 0x00) {
+                    if(bPause == false) {
+                        bPause = true;
+                        frameCount = 0;
+                    }
+                } else if(v == 0x01) {
+                    if(bPause == true) {
+                        bPause = false;
+                        frameCount = 0;
+                    }
+                }
+            }
+        }
+#endif
+        if(frameCount == 0) { /* suspend or resume */
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
             if(bPause) {
                 cout << "Paused ..." << endl;
@@ -676,10 +714,8 @@ int main(int argc, char**argv)
                 cout << "Restart ..." << endl;
                 outThread = thread(&VideoWriterThread, capFrame.cols, capFrame.rows);
             }
-            frameCount = 0;
 #endif
         }
-        vPushButton = gv;
 
         if(bPause) {
             if(bShutdown)
@@ -825,7 +861,10 @@ int main(int argc, char**argv)
 #endif //VIDEO_INPUT_FILE
 #endif //VIDEO_OUTPUT_FRAME               
 #ifdef F3F_TTY_BASE
-        		    base_toggle(ttyFd, frameCount);
+                    if(primaryTarget->ToggleCount() < 3) {
+                        base_trigger(ttyFd, frameCount);
+                        primaryTarget->Toggle();
+                    }
 #endif
 #ifdef JETSON_NANO
                     gpioSetValue(redLED, on);
