@@ -74,6 +74,7 @@ using std::chrono::microseconds;
 #endif
 
 #define BASE_B
+#define MAX_NUM_TRIGGER 3
 
 //#define MAX_NUM_CONTOURS 16
 
@@ -150,20 +151,18 @@ static void set_blocking (int fd, int should_block)
             printf ("error %d setting term attributes\n", errno);
 }
 
-static void base_trigger(int fd, uint64_t frameNo) 
+static void base_trigger(int fd, uint8_t triggerCount) 
 {
     static uint8_t serNo = 0x3f;
-    static uint64_t lastFrameNo = 0;
     uint8_t data[1];
 
     if(!fd)
         return;
 
-    if(frameNo - lastFrameNo > 6) { /* Not been triggled for over 6 frames is the same triggle. Keep serNo steady. */
+    if(triggerCount == 0) { /* It's NEW trigger */
         if(++serNo > 0x3f)
             serNo = 0;
     }
-    lastFrameNo = frameNo;
 
 #ifdef BASE_A
     data[0] = (serNo & 0x3f);
@@ -200,10 +199,10 @@ class Target
 protected:
     double m_arcLength;
     unsigned long m_frameTick;
-    uint8_t m_toggleCount;
+    uint8_t m_triggerCount;
 
 public:
-    Target(Rect & roi, unsigned long frameTick) : m_arcLength(0), m_frameTick(frameTick), m_toggleCount(0) {
+    Target(Rect & roi, unsigned long frameTick) : m_arcLength(0), m_frameTick(frameTick), m_triggerCount(0) {
         m_rects.push_back(roi);
         m_points.push_back(roi.tl());
         m_frameTick = frameTick;
@@ -216,12 +215,7 @@ public:
     void Update(Rect & roi, unsigned long frameTick) {
         if(m_rects.size() > 0)
             m_arcLength += norm(roi.tl() - m_rects.back().tl());
-#if 0
-        if(m_points.size() > 1) {
-            m_velocity.x = (roi.tl().x - m_rects.back().tl().x);
-            m_velocity.y = (roi.tl().y - m_rects.back().tl().y);
-        }
-#else        
+
         if(m_points.size() == 1) {
             m_velocity.x = (roi.tl().x - m_rects.back().tl().x);
             m_velocity.y = (roi.tl().y - m_rects.back().tl().y);
@@ -230,18 +224,30 @@ public:
             m_velocity.y = (m_velocity.y + (roi.tl().y - m_rects.back().tl().y)) / 2;
         }
         //printf("Velocity : [%d, %d]\n", m_velocity.x, m_velocity.y);
-#endif
         m_rects.push_back(roi);
         m_points.push_back(roi.tl());
         m_frameTick = frameTick;
+    }
+
+    void Reset() {
+        Rect r = m_rects.back();
+        Point p = r.tl();
+        m_rects.clear();
+        m_points.clear();
+        m_rects.push_back(r);
+        m_points.push_back(p);
+        m_triggerCount = 0;
+        //m_frameTick =
+        m_arcLength = 0; /* TODO : Do clear this ? */
     }
 
     inline double ArcLength() { return m_arcLength; }
     inline unsigned long FrameTick() { return m_frameTick; }
     inline Rect & LatestRect() { return m_rects.back(); }
     inline Point & LatestPoint() { return m_points.back(); }
-    inline void Toggle() { m_toggleCount++; }
-    inline uint8_t ToggleCount() { return m_toggleCount; }
+    inline void Trigger() { m_triggerCount++; }
+    inline uint8_t TriggerCount() { return m_triggerCount; }
+    //inline Point & Velocity() { return m_velocity; }
 };
 
 static inline bool TargetSort(Target & a, Target & b)
@@ -278,8 +284,8 @@ public:
             if(i == roiRect.size()) { /* Target missing ... */
                 if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) { /* Target still missing for over X frames */
 #ifdef DEBUG            
-Point p = t->m_points.back();
-printf("lost target : %d, %d\n", p.x, p.y);
+                    Point p = t->m_points.back();
+                    printf("lost target : %d, %d\n", p.x, p.y);
 #endif
                     t = m_targets.erase(t); /* Remove tracing target */
                     continue;
@@ -311,17 +317,16 @@ printf("lost target : %d, %d\n", p.x, p.y);
                     unsigned long f = m_frameTick - t->FrameTick();
                     r.x += t->m_velocity.x * f;
                     r.y += t->m_velocity.y * f;
-#if 1
+
                     if(cv::norm(r.tl()-roiRect[i].tl()) < 120) { /* Target tracked with Euclidean distance ... */
                         t->Update(roiRect[i], m_frameTick);
                         break;
                     }
-#endif
                 }
                 if(t == m_targets.end()) { /* New target */
                     m_targets.push_back(Target(roiRect[i], m_frameTick));
 #ifdef DEBUG            
-printf("new target : %d, %d\n", roiRect[i].tl().x, roiRect[i].tl().y);
+                    printf("new target : %d, %d\n", roiRect[i].tl().x, roiRect[i].tl().y);
 #endif
                 }
             }
@@ -330,30 +335,11 @@ printf("new target : %d, %d\n", roiRect[i].tl().x, roiRect[i].tl().y);
     }
 
     Target *PrimaryTarget() {
-#if 0        
-        double trackingArcLength = 0;
-        list< Target >::iterator it = m_targets.end();
-        for(list< Target >::iterator t=m_targets.begin();t!=m_targets.end();t++) {
-            if(t->ArcLength() > trackingArcLength) {
-                trackingArcLength = t->ArcLength();
-                it = t;
-#ifdef DEBUG            
-Point p = t->m_points.back();
-printf("primary target : %d, %d\n", p.x, p.y);
-#endif
-            }
-        }
-        if(it != m_targets.end()) {
-            return &(*it);
-        }
-        return 0;
-#else
         if(m_targets.size() == 0)
             return 0;
 
         m_targets.sort(TargetSort);
         return &m_targets.front();
-#endif
     }
 };
 
@@ -845,7 +831,7 @@ int main(int argc, char**argv)
             writeText(outFrame, string(str));
 #endif
 */
-            if(primaryTarget->ArcLength() > 16) {
+            if(primaryTarget->ArcLength() > 120) {
 #ifdef VIDEO_INPUT_FILE
                 if((primaryTarget->m_points[0].x > cx && primaryTarget->LatestPoint().x <= cx) ||
                     (primaryTarget->m_points[0].x < cx && primaryTarget->LatestPoint().x >= cx)) {
@@ -861,10 +847,11 @@ int main(int argc, char**argv)
 #endif //VIDEO_INPUT_FILE
 #endif //VIDEO_OUTPUT_FRAME               
 #ifdef F3F_TTY_BASE
-                    if(primaryTarget->ToggleCount() < 3) {
-                        base_trigger(ttyFd, frameCount);
-                        primaryTarget->Toggle();
-                    }
+                    if(primaryTarget->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
+                        base_trigger(ttyFd, primaryTarget->TriggerCount());
+                        primaryTarget->Trigger();
+                    } else
+                        primaryTarget->Reset();
 #endif
 #ifdef JETSON_NANO
                     gpioSetValue(redLED, on);
