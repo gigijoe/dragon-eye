@@ -59,25 +59,25 @@ using std::chrono::microseconds;
 #define VIDEO_OUTPUT_SCREEN
 
 #define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
-//#define VIDEO_OUTPUT_FILE_NAME "result"
+#define VIDEO_OUTPUT_FILE_NAME "video"
 
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
 #define VIDEO_OUTPUT_FRAME
-//#define VIDEO_OUTPUT_CAP_FRAME
+//#define VIDEO_OUTPUT_ORIGINAL_FRAME
 #endif
 
 //#define VIDEO_FRAME_DROP 30
 
 #define F3F
-#ifdef JETSON_NANO
 #define F3F_TTY_BASE
-#endif
-
-#define BASE_B
-#define MAX_NUM_TRIGGER 3
 
 //#define MAX_NUM_CONTOURS 16
+#define MAX_NUM_TRIGGER 3
 
+typedef enum { BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType;
+static BaseType baseType = BASE_A;
+
+static bool bVideoOutputFile = false;
 static bool bShutdown = false;
 static bool bPause = true;
 
@@ -97,10 +97,9 @@ static int set_interface_attribs (int fd, int speed, int parity)
 {
     struct termios tty;
     memset (&tty, 0, sizeof tty);
-    if (tcgetattr (fd, &tty) != 0)
-    {
-            printf ("error %d from tcgetattr\n", errno);
-            return -1;
+    if(tcgetattr (fd, &tty) != 0) {
+        printf ("error %d from tcgetattr\n", errno);
+        return -1;
     }
 
     cfsetospeed (&tty, speed);
@@ -126,15 +125,14 @@ static int set_interface_attribs (int fd, int speed, int parity)
     tty.c_cflag &= ~CSTOPB;
     tty.c_cflag &= ~CRTSCTS;
 
-    if (tcsetattr (fd, TCSANOW, &tty) != 0)
-    {
-            printf ("error %d from tcsetattr\n", errno);
-            return -1;
+    if(tcsetattr (fd, TCSANOW, &tty) != 0) {
+        printf ("error %d from tcsetattr\n", errno);
+        return -1;
     }
     return 0;
 }
 
-static void set_blocking (int fd, int should_block)
+static void set_blocking(int fd, int should_block)
 {
     struct termios tty;
     memset (&tty, 0, sizeof tty);
@@ -164,15 +162,15 @@ static void base_trigger(int fd, uint8_t triggerCount)
             serNo = 0;
     }
 
-#ifdef BASE_A
-    data[0] = (serNo & 0x3f);
-    printf("BASE_A[%d]\r\n", serNo);
-#endif    
-#ifdef BASE_B
-    data[0] = (serNo & 0x3f) | 0x40;
-    printf("BASE_B[%d]\r\n", serNo);
-#endif
-    write(fd, data, 1);
+    if(baseType == BASE_A) {
+        data[0] = (serNo & 0x3f);
+        printf("BASE_A[%d]\r\n", serNo);
+        write(fd, data, 1);
+    } else if(baseType == BASE_B) {
+        data[0] = (serNo & 0x3f) | 0x40;
+        printf("BASE_B[%d]\r\n", serNo);
+        write(fd, data, 1);
+    }
 }
 
 /*
@@ -190,7 +188,7 @@ inline void writeText( Mat & mat, const string text )
     int fontFace = FONT_HERSHEY_SIMPLEX;
     double fontScale = 1;
     int thickness = 1;  
-    Point textOrg( 10, 10 );
+    Point textOrg(40, 40);
     putText( mat, text, textOrg, fontFace, fontScale, Scalar(0, 255, 0), thickness, cv::LINE_8 );
 }
 
@@ -439,23 +437,26 @@ void VideoWriterThread(int width, int height)
             break; /* File doesn't exist. OK */
     }
 #ifdef JETSON_NANO
+    if(bVideoOutputFile) {
 #ifdef VIDEO_INPUT_FILE
-    snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
+        snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
                    nvvidconv ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
-        30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
+            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
 #else
     /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
-    snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
+        snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
                    nvvidconv flip-method=1 ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
-        30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
+            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
 #endif //VIDEO_INPUT_FILE
-    outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
-    cout << "Vodeo output " << gstStr << endl;
+        outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
+        cout << "Vodeo output " << gstStr << endl;
+    }
 #else
-    outFile.open(filePath, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
-    cout << "Vodeo output " << filePath << endl;
+        outFile.open(filePath, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
+        cout << "Vodeo output " << filePath << endl;
+    }
 #endif //JETSON_NANO
 #endif //VIDEO_OUTPUT_FILE_NAME
 #ifdef VIDEO_OUTPUT_SCREEN
@@ -474,7 +475,8 @@ void VideoWriterThread(int width, int height)
         while(1) {
             Mat frame = videoWriterQueue.pop();
 #ifdef VIDEO_OUTPUT_FILE_NAME
-            outFile.write(frame);
+            if(bVideoOutputFile)
+                outFile.write(frame);
 #endif
 #ifdef VIDEO_OUTPUT_SCREEN
 #ifdef JETSON_NANO
@@ -487,7 +489,8 @@ void VideoWriterThread(int width, int height)
         // Nothing more to process, we're done
         std::cout << "FrameQueue " << " cancelled, worker finished." << std::endl;
 #ifdef VIDEO_OUTPUT_FILE_NAME
-        outFile.release();
+        if(bVideoOutputFile)
+            outFile.release();
 #endif
 #ifdef VIDEO_OUTPUT_SCREEN
 #ifdef JETSON_NANO
@@ -502,11 +505,17 @@ void VideoWriterThread(int width, int height)
 
 int main(int argc, char**argv)
 {
+    double fps = 0;
+
 #ifdef JETSON_NANO
     jetsonNanoGPIONumber redLED = gpio16; // Ouput
     jetsonNanoGPIONumber greenLED = gpio17; // Ouput
+    jetsonNanoGPIONumber blueLED = gpio50; // Ouput
+    jetsonNanoGPIONumber relayControl = gpio51; // Ouput
 
     jetsonNanoGPIONumber pushButton = gpio18; // Input
+    jetsonNanoGPIONumber baseSwitch = gpio19; // Input
+    jetsonNanoGPIONumber videoOutputSwitch = gpio20; // Input
 
     /* 
     * Do enable GPIO by /etc/profile.d/export-gpio.sh 
@@ -514,7 +523,8 @@ int main(int argc, char**argv)
 
     gpioExport(redLED);
     gpioExport(greenLED);
-    gpioExport(pushButton);
+    gpioExport(blueLED);
+    gpioExport(relayControl);
 
     gpioSetDirection(redLED, outputPin); /* Red LED on while detection */
     gpioSetValue(redLED, off);
@@ -522,7 +532,37 @@ int main(int argc, char**argv)
     gpioSetDirection(greenLED, outputPin); /* Flash during frames */
     gpioSetValue(greenLED, on);
 
+    gpioSetDirection(blueLED, outputPin); /* */
+    gpioSetValue(blueLED, off);
+
+    gpioSetDirection(relayControl, outputPin); /* */
+    gpioSetValue(relayControl, off);
+
+    gpioExport(pushButton);
+    gpioExport(baseSwitch);
+    gpioExport(videoOutputSwitch);
+
     gpioSetDirection(pushButton, inputPin); /* Pause / Restart */
+    gpioSetDirection(baseSwitch, inputPin); /* Base A / B */
+    gpioSetDirection(videoOutputSwitch, inputPin); /* Video output on / off */
+
+    unsigned int gv;
+    gpioGetValue(baseSwitch, &gv);
+    if(gv == 0) /* pull low */
+        baseType = BASE_B; 
+
+    gpioGetValue(videoOutputSwitch, &gv);
+    if(gv == 0)
+        bVideoOutputFile = true;
+
+    switch(baseType) {
+        case BASE_A: printf("<<< BASE A >>>\n");
+            break;
+        case BASE_B: printf("<<< BASE B >>>\n");
+            break;
+        default: printf("<<< BASE Unknown >>>\n");
+            break;
+    }
 #endif
 #ifdef F3F_TTY_BASE
     const char *ttyName = "/dev/ttyTHS1";
@@ -650,7 +690,6 @@ int main(int argc, char**argv)
 #endif
     while(cap.read(capFrame)) {
 #ifdef JETSON_NANO
-        unsigned int gv;
         gpioGetValue(pushButton, &gv);
 
         frameCount++;
@@ -666,25 +705,47 @@ int main(int argc, char**argv)
         vPushButton = gv;
 
 #ifdef F3F_TTY_BASE
-        uint8_t data[1];
-        int r = read(ttyFd, data, 1); /* Receive trigger from f3f timer */
-        if(r == 1) {
-#ifdef BASE_A
-            if((data[0] & 0xc0) == 0x00) {
-#endif
-#ifdef BASE_B
-            if((data[0] & 0xc0) == 0x40) {
-#endif
-                uint8_t v = data[0] & 0x3f;
-                if(v == 0x00) {
-                    if(bPause == false) {
-                        bPause = true;
-                        frameCount = 0;
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(ttyFd, &rfds);
+
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 0;
+
+        if(select(ttyFd+1, &rfds, NULL, NULL, &tv) > 0) {
+            uint8_t data[1];
+            int r = read(ttyFd, data, 1); /* Receive trigger from f3f timer */
+            if(r == 1) {
+                if(baseType == BASE_A) {
+                    if((data[0] & 0xc0) == 0x00) {
+                        uint8_t v = data[0] & 0x3f;
+                        if(v == 0x00) {
+                            if(bPause == false) {
+                                bPause = true;
+                                frameCount = 0;
+                            }
+                        } else if(v == 0x01) {
+                            if(bPause == true) {
+                                bPause = false;
+                                frameCount = 0;
+                            }
+                        }
                     }
-                } else if(v == 0x01) {
-                    if(bPause == true) {
-                        bPause = false;
-                        frameCount = 0;
+                } else if(baseType == BASE_B) {
+                    if((data[0] & 0xc0) == 0x40) {
+                        uint8_t v = data[0] & 0x3f;
+                        if(v == 0x00) {
+                            if(bPause == false) {
+                                bPause = true;
+                                frameCount = 0;
+                            }
+                        } else if(v == 0x01) {
+                            if(bPause == true) {
+                                bPause = false;
+                                frameCount = 0;
+                            }
+                        }
                     }
                 }
             }
@@ -716,7 +777,7 @@ int main(int argc, char**argv)
             gpioSetValue(greenLED, on);
         else
             gpioSetValue(greenLED, off);
-#endif
+#endif //JETSON_NANO
         cvtColor(capFrame, frame, COLOR_BGR2GRAY);
 #ifdef VIDEO_OUTPUT_FRAME
         capFrame.copyTo(outFrame);
@@ -852,39 +913,27 @@ int main(int argc, char**argv)
                         primaryTarget->Trigger();
                     } else
                         primaryTarget->Reset();
-#endif
+#endif //F3F_TTY_BASE
 #ifdef JETSON_NANO
                     gpioSetValue(redLED, on);
-#endif
+#endif //JETSON_NANO
                 }
             }
-#endif  /* F3F */            
+#endif //F3F    
         }
-        //imshow("foreground mask", foregroundMask);
 /*
         bsModel->getBackgroundImage(background);
         if (!background.empty())
             imshow("mean background image", background );
 */
-#if 0
-        int k = waitKey(1);
-        if(k == 27) {
-            break;
-        } else if(k == 'p') {
-            while(waitKey(1) != 'p') {
-                if(bShutdown)
-                    break;
-            }
-        }
-#ifdef JETSON_NANO
-#else        
-        imshow("Out Frame",outFrame);
-#endif
-#endif
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
-#ifdef VIDEO_OUTPUT_CAP_FRAME
+#ifdef VIDEO_OUTPUT_ORIGINAL_FRAME
         videoWriterQueue.push(capFrame.clone());
 #else
+        char str[32];
+        snprintf(str, 32, "FPS : %.2lf", fps);
+        writeText(outFrame, string(str));
+
         videoWriterQueue.push(outFrame.clone());
 #endif
 #endif
@@ -893,7 +942,9 @@ int main(int argc, char**argv)
 
         high_resolution_clock::time_point t2(high_resolution_clock::now());
         double dt_us(static_cast<double>(duration_cast<microseconds>(t2 - t1).count()));
-        std::cout << "FPS : " << fixed  <<  setprecision(2) << (1000000.0 / dt_us) << std::endl;
+        //std::cout << "FPS : " << fixed  <<  setprecision(2) << (1000000.0 / dt_us) << std::endl;
+        fps = (1000000.0 / dt_us);
+        std::cout << "FPS : " << fixed  << setprecision(2) <<  fps << std::endl;
 
         t1 = high_resolution_clock::now();
     }
