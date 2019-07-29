@@ -187,11 +187,11 @@ static inline bool ContoursSort(vector<cv::Point> contour1, vector<cv::Point> co
 
 inline void writeText( Mat & mat, const string text )
 {
-    int fontFace = FONT_HERSHEY_SCRIPT_SIMPLEX;
+    int fontFace = FONT_HERSHEY_SIMPLEX;
     double fontScale = 1;
     int thickness = 1;  
     Point textOrg( 10, 10 );
-    putText( mat, text, textOrg, fontFace, fontScale, Scalar(0, 255, 0), thickness, 8 );
+    putText( mat, text, textOrg, fontFace, fontScale, Scalar(0, 255, 0), thickness, cv::LINE_8 );
 }
 
 class Target
@@ -689,7 +689,7 @@ int main(int argc, char**argv)
                 }
             }
         }
-#endif
+#endif //F3F_TTY_BASE
         if(frameCount == 0) { /* suspend or resume */
 #if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
             if(bPause) {
