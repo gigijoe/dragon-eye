@@ -34,8 +34,6 @@ using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
 
-#define JETSON_NANO
-
 #define CAMERA_WIDTH 1280
 #define CAMERA_HEIGHT 720
 #define CAMERA_FPS 60
@@ -57,26 +55,20 @@ using std::chrono::microseconds;
 //#define VIDEO_INPUT_FILE "../video/580378201.mp4"
 
 #define VIDEO_OUTPUT_SCREEN
-
 #define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
 #define VIDEO_OUTPUT_FILE_NAME "video"
 
-#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
-#define VIDEO_OUTPUT_FRAME
+#define VIDEO_OUTPUT_RESULT_FRAME
 //#define VIDEO_OUTPUT_ORIGINAL_FRAME
-#endif
 
-//#define VIDEO_FRAME_DROP 30
-
-#define F3F
-#define F3F_TTY_BASE
-
-//#define MAX_NUM_CONTOURS 16
-#define MAX_NUM_TRIGGER 3
+#define MAX_NUM_TRIGGER 6
+#define MIN_NUM_TRIGGER 3
 
 typedef enum { BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType;
-static BaseType baseType = BASE_A;
 
+static const BaseType baseType = BASE_B;
+
+static bool bVideoOutputScreen = false;
 static bool bVideoOutputFile = false;
 static bool bShutdown = false;
 static bool bPause = true;
@@ -149,7 +141,7 @@ static void set_blocking(int fd, int should_block)
             printf ("error %d setting term attributes\n", errno);
 }
 
-static void base_trigger(int fd, uint8_t triggerCount) 
+static void base_trigger(int fd, bool newTrigger) 
 {
     static uint8_t serNo = 0x3f;
     uint8_t data[1];
@@ -157,7 +149,7 @@ static void base_trigger(int fd, uint8_t triggerCount)
     if(!fd)
         return;
 
-    if(triggerCount == 0) { /* It's NEW trigger */
+    if(newTrigger) { /* It's NEW trigger */
         if(++serNo > 0x3f)
             serNo = 0;
     }
@@ -221,7 +213,6 @@ public:
             m_velocity.x = (m_velocity.x + (roi.tl().x - m_rects.back().tl().x)) / 2;
             m_velocity.y = (m_velocity.y + (roi.tl().y - m_rects.back().tl().y)) / 2;
         }
-        //printf("Velocity : [%d, %d]\n", m_velocity.x, m_velocity.y);
         m_rects.push_back(roi);
         m_points.push_back(roi.tl());
         m_frameTick = frameTick;
@@ -412,23 +403,19 @@ void FrameQueue::reset()
 *
 */
 
-#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
 FrameQueue videoWriterQueue;
 
 void VideoWriterThread(int width, int height)
 {    
     Size videoSize = Size((int)width,(int)height);
     char gstStr[320];
-#ifdef VIDEO_OUTPUT_FILE_NAME
+
     VideoWriter outFile;
+    VideoWriter outScreen;
     char filePath[64];
     int videoOutoutIndex = 0;
     while(videoOutoutIndex < 1000) {
-#ifdef JETSON_NANO
         snprintf(filePath, 64, "%s/%s%03d.mkv", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
-#else
-        snprintf(filePath, 64, "%s/%s%03d.mp4", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
-#endif
         FILE *fp = fopen(filePath, "rb");
         if(fp) { /* file exist ... */
             fclose(fp);
@@ -436,7 +423,7 @@ void VideoWriterThread(int width, int height)
         } else
             break; /* File doesn't exist. OK */
     }
-#ifdef JETSON_NANO
+
     if(bVideoOutputFile) {
 #ifdef VIDEO_INPUT_FILE
         snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
@@ -453,69 +440,47 @@ void VideoWriterThread(int width, int height)
         outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
         cout << "Vodeo output " << gstStr << endl;
     }
-#else
-        outFile.open(filePath, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
-        cout << "Vodeo output " << filePath << endl;
+
+    if(bVideoOutputScreen) {
+        snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
+                       videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
+                       nvvidconv ! video/x-raw(memory:NVMM) ! \
+                       nvoverlaysink sync=false -e ", 30);
+        outScreen.open(gstStr, VideoWriter::fourcc('I', '4', '2', '0'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
     }
-#endif //JETSON_NANO
-#endif //VIDEO_OUTPUT_FILE_NAME
-#ifdef VIDEO_OUTPUT_SCREEN
-#ifdef JETSON_NANO
-    snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
-                   videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-                   nvvidconv ! video/x-raw(memory:NVMM) ! \
-                   nvoverlaysink sync=false -e ", 30);
-    VideoWriter outScreen;
-    outScreen.open(gstStr, VideoWriter::fourcc('I', '4', '2', '0'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
-#else
-#endif //JETSON_NANO
-#endif //VIDEO_OUTPUT_SCREEN
+
     videoWriterQueue.reset();
+
     try {
         while(1) {
             Mat frame = videoWriterQueue.pop();
-#ifdef VIDEO_OUTPUT_FILE_NAME
             if(bVideoOutputFile)
                 outFile.write(frame);
-#endif
-#ifdef VIDEO_OUTPUT_SCREEN
-#ifdef JETSON_NANO
-            outScreen.write(frame);
-#else
-#endif //JETSON_NANO
-#endif
+            if(bVideoOutputScreen)
+                outScreen.write(frame);
         }
     } catch (FrameQueue::cancelled & /*e*/) {
         // Nothing more to process, we're done
         std::cout << "FrameQueue " << " cancelled, worker finished." << std::endl;
-#ifdef VIDEO_OUTPUT_FILE_NAME
         if(bVideoOutputFile)
             outFile.release();
-#endif
-#ifdef VIDEO_OUTPUT_SCREEN
-#ifdef JETSON_NANO
-        outScreen.release();
-#else
-#endif //JETSON_NANO
-#endif
+        if(bVideoOutputScreen)
+            outScreen.release();
     }    
 }
-
-#endif
 
 int main(int argc, char**argv)
 {
     double fps = 0;
 
-#ifdef JETSON_NANO
     jetsonNanoGPIONumber redLED = gpio16; // Ouput
     jetsonNanoGPIONumber greenLED = gpio17; // Ouput
     jetsonNanoGPIONumber blueLED = gpio50; // Ouput
     jetsonNanoGPIONumber relayControl = gpio51; // Ouput
 
     jetsonNanoGPIONumber pushButton = gpio18; // Input
-    jetsonNanoGPIONumber baseSwitch = gpio19; // Input
-    jetsonNanoGPIONumber videoOutputSwitch = gpio20; // Input
+    jetsonNanoGPIONumber videoOutputScreenSwitch = gpio19; // Input
+    jetsonNanoGPIONumber videoOutputFileSwitch = gpio20; // Input
 
     /* 
     * Do enable GPIO by /etc/profile.d/export-gpio.sh 
@@ -539,32 +504,35 @@ int main(int argc, char**argv)
     gpioSetValue(relayControl, off);
 
     gpioExport(pushButton);
-    gpioExport(baseSwitch);
-    gpioExport(videoOutputSwitch);
+    gpioExport(videoOutputScreenSwitch);
+    gpioExport(videoOutputFileSwitch);
 
     gpioSetDirection(pushButton, inputPin); /* Pause / Restart */
-    gpioSetDirection(baseSwitch, inputPin); /* Base A / B */
-    gpioSetDirection(videoOutputSwitch, inputPin); /* Video output on / off */
+    gpioSetDirection(videoOutputScreenSwitch, inputPin); /* Base A / B */
+    gpioSetDirection(videoOutputFileSwitch, inputPin); /* Video output on / off */
 
     unsigned int gv;
-    gpioGetValue(baseSwitch, &gv);
+    gpioGetValue(videoOutputScreenSwitch, &gv);
     if(gv == 0) /* pull low */
-        baseType = BASE_B; 
+        bVideoOutputScreen = true; 
 
-    gpioGetValue(videoOutputSwitch, &gv);
+    printf("<<< Video output screen : %s\n", bVideoOutputScreen ? "Enable" : "Disable");
+
+    gpioGetValue(videoOutputFileSwitch, &gv);
     if(gv == 0)
         bVideoOutputFile = true;
 
+    printf("<<< Video output file : %s\n", bVideoOutputFile ? "Enable" : "Disable");
+
     switch(baseType) {
-        case BASE_A: printf("<<< BASE A >>>\n");
+        case BASE_A: printf("<<< BASE A\n");
             break;
-        case BASE_B: printf("<<< BASE B >>>\n");
+        case BASE_B: printf("<<< BASE B\n");
             break;
-        default: printf("<<< BASE Unknown >>>\n");
+        default: printf("<<< BASE Unknown\n");
             break;
     }
-#endif
-#ifdef F3F_TTY_BASE
+
     const char *ttyName = "/dev/ttyTHS1";
 
     int ttyFd = open (ttyName, O_RDWR | O_NOCTTY | O_SYNC);
@@ -573,7 +541,6 @@ int main(int argc, char**argv)
         set_blocking (ttyFd, 0);                // set no blocking
     } else
         printf ("error %d opening %s: %s\n", errno, ttyName, strerror (errno));
-#endif
 
     if(signal(SIGINT, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGINT\n");
@@ -584,68 +551,31 @@ int main(int argc, char**argv)
     cuda::printShortCudaDeviceInfo(cuda::getDevice());
     std::cout << cv::getBuildInformation() << std::endl;
 
-#ifdef JETSON_NANO
     static char gstStr[320];
-#endif
+
 #ifdef VIDEO_INPUT_FILE
-#ifdef JETSON_NANO
     snprintf(gstStr, 320, "filesrc location=%s ! qtdemux name=demux demux.video_0 ! queue ! "
         "h264parse ! omxh264dec ! videoconvert ! appsink ", VIDEO_INPUT_FILE);
     VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
 #else
-    VideoCapture cap(VIDEO_INPUT_FILE, cv::CAP_FFMPEG);
-#endif
-#else
     int index = 0;    
     if(argc > 1)
         index = atoi(argv[1]);
-#ifdef JETSON_NANO
     /* export GST_DEBUG=2 to show debug message */
     snprintf(gstStr, 320, "nvarguscamerasrc ! video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
         nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
         CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
     VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
-#else
-    VideoCapture cap(index);
-#endif
 
-#ifdef JETSON_NANO
-        cout << "Video input " << gstStr << endl;
-#else
-        cout << "Video input (" << static_cast<int32_t>(cap.get(CAP_PROP_FRAME_WIDTH)) << "x" << static_cast<int32_t>(cap.get(CAP_PROP_FRAME_HEIGHT))
-            << ") at " << cap.get(CAP_PROP_FPS) << " FPS." << endl;
-#endif
-
+    cout << "Video input " << gstStr << endl;
 #endif
     if(!cap.isOpened()) {
         cout << "Could not open video" << endl;
         return 1;
     }
 
-#ifdef VIDEO_INPUT_FILE
-#else
-#ifdef JETSON_NANO
-    cout << "Video input " << gstStr << endl;
-#else
-    cap.set(CAP_PROP_FOURCC ,VideoWriter::fourcc('M', 'J', 'P', 'G') );
-    cap.set(CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH);
-    cap.set(CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT);
-    cap.set(CAP_PROP_FPS, 30.0);
-
-    cout << "Video input (" << static_cast<int32_t>(cap.get(CAP_PROP_FRAME_WIDTH)) << "x" << static_cast<int32_t>(cap.get(CAP_PROP_FRAME_HEIGHT))
-        << ") at " << cap.get(CAP_PROP_FPS) << " FPS." << endl;
-#endif
-#if 0        
-    cout << "Drop first " << VIDEO_FRAME_DROP << " for camera stable ..." << endl;
-    for(int i=0;i<VIDEO_FRAME_DROP;i++) {
-        if(!cap.read(capFrame))
-            printf("Error read camera frame ...\n");
-    }
-#endif
-#endif
-#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
     thread outThread;
-#endif
+
     //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorKNN();
     //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorMOG2();
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(30, 16, false);
@@ -654,7 +584,7 @@ int main(int argc, char**argv)
     bool doSmoothMask = true;
 
     Mat foregroundMask, background;
-#ifdef VIDEO_OUTPUT_FRAME
+#ifdef VIDEO_OUTPUT_RESULT_FRAME
     Mat outFrame;
 #endif
     cuda::GpuMat gpuForegroundMask;
@@ -665,7 +595,6 @@ int main(int argc, char**argv)
     Tracker tracker;
     Target *primaryTarget = 0;
 
-#ifdef F3F
     int cx, cy;
     while(1) {
         if(cap.read(capFrame))
@@ -680,16 +609,13 @@ int main(int argc, char**argv)
     cx = capFrame.cols - 1;
     cy = (capFrame.rows / 2) - 1;
 #endif
-#endif
 
     high_resolution_clock::time_point t1(high_resolution_clock::now());
 
-#ifdef JETSON_NANO
     uint64_t frameCount = 0;
     unsigned int vPushButton = 1; /* Initial high */
-#endif
+
     while(cap.read(capFrame)) {
-#ifdef JETSON_NANO
         gpioGetValue(pushButton, &gv);
 
         frameCount++;
@@ -704,7 +630,6 @@ int main(int argc, char**argv)
         }
         vPushButton = gv;
 
-#ifdef F3F_TTY_BASE
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(ttyFd, &rfds);
@@ -750,18 +675,19 @@ int main(int argc, char**argv)
                 }
             }
         }
-#endif //F3F_TTY_BASE
+
         if(frameCount == 0) { /* suspend or resume */
-#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
             if(bPause) {
                 cout << "Paused ..." << endl;
-                videoWriterQueue.cancel();
-                outThread.join();
+                if(bVideoOutputScreen || bVideoOutputFile) {
+                    videoWriterQueue.cancel();
+                    outThread.join();
+                }
             } else {/* Restart, record new video */
                 cout << "Restart ..." << endl;
-                outThread = thread(&VideoWriterThread, capFrame.cols, capFrame.rows);
+                if(bVideoOutputScreen || bVideoOutputFile)
+                    outThread = thread(&VideoWriterThread, capFrame.cols, capFrame.rows);
             }
-#endif
         }
 
         if(bPause) {
@@ -777,18 +703,18 @@ int main(int argc, char**argv)
             gpioSetValue(greenLED, on);
         else
             gpioSetValue(greenLED, off);
-#endif //JETSON_NANO
+
         cvtColor(capFrame, frame, COLOR_BGR2GRAY);
-#ifdef VIDEO_OUTPUT_FRAME
-        capFrame.copyTo(outFrame);
-#ifdef F3F
+#ifdef VIDEO_OUTPUT_RESULT_FRAME
+        if(bVideoOutputScreen || bVideoOutputFile) {
+            capFrame.copyTo(outFrame);
 #ifdef VIDEO_INPUT_FILE
-        line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 255, 0), 1);
+            line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 255, 0), 1);
 #else
-        line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
+            line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
 #endif //VIDEO_INPUT_FILE
-#endif //F3F
-#endif //VIDEO_OUTPUT_FRAME
+        }
+#endif //VIDEO_OUTPUT_RESULT_FRAME
         int erosion_size = 6;   
         Mat element = cv::getStructuringElement(cv::MORPH_RECT,
                           cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
@@ -809,6 +735,10 @@ int main(int argc, char**argv)
 
         if(doSmoothMask) {
             gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
+            /* Disable threadhold while low background noise */
+            /* 10.0 may be good senstitive */
+            //cuda::threshold(gpuForegroundMask, gpuForegroundMask, 10.0, 255.0, THRESH_BINARY);
+            /* 40.0 with lower senstitive */
             //cuda::threshold(gpuForegroundMask, gpuForegroundMask, 40.0, 255.0, THRESH_BINARY);
             
 			/* Erode & Dilate */
@@ -837,11 +767,7 @@ int main(int argc, char**argv)
         vector<Rect> roiRect;
 
         RNG rng(12345);
-#if 0
-        if(contours.size() > MAX_NUM_CONTOURS ) { /* Too many objects */
-            printf("Video unstable ...\n"); 
-        }
-#endif
+
     	for(int i=0; i<contours.size(); i++) {
     		approxPolyDP( Mat(contours[i]), contours[i], 3, true );
        		boundRect[i] = boundingRect( Mat(contours[i]) );
@@ -850,17 +776,13 @@ int main(int argc, char**argv)
                 boundRect[i].height > MIN_TARGET_HEIGHT &&
     			boundRect[i].width <= MAX_TARGET_WIDTH && 
                 boundRect[i].height <= MAX_TARGET_HEIGHT) {
-#if 0
-                if(primaryTarget && contours.size() > MAX_NUM_CONTOURS ) { /* Too many objects */
-                    /* if primary target exist, try to track it ONLY and ignore others ... */
-                    if((primaryTarget->LatestRect() & boundRect[i]).area() > 0) /* Primagy target tracked ... */
-                        roiRect.push_back(boundRect[i]);
-                } else
-#endif
+
                     roiRect.push_back(boundRect[i]);
-#ifdef VIDEO_OUTPUT_FRAME
-            Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
-            rectangle( outFrame, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0 );
+#ifdef VIDEO_OUTPUT_RESULT_FRAME
+                    if(bVideoOutputScreen || bVideoOutputFile) {
+                        Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
+                        rectangle( outFrame, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0 );
+                    }
 #endif
     		}
             if(roiRect.size() >= MAX_NUM_TARGET) /* Deal top 5 only */
@@ -869,29 +791,22 @@ int main(int argc, char**argv)
 
         tracker.Update(frame, roiRect);
 
-#ifdef JETSON_NANO
         gpioSetValue(redLED, off);
-#endif
+
         primaryTarget = tracker.PrimaryTarget();
         if(primaryTarget) {
-#ifdef VIDEO_OUTPUT_FRAME
-            Rect r = primaryTarget->m_rects.back();
-            rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
+#ifdef VIDEO_OUTPUT_RESULT_FRAME
+            if(bVideoOutputScreen || bVideoOutputFile) {
+                Rect r = primaryTarget->m_rects.back();
+                rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
 
-            if(primaryTarget->m_points.size() > 1) { /* Minimum 2 points ... */
-                for(int i=0;i<primaryTarget->m_points.size()-1;i++) {
-                    line(outFrame, primaryTarget->m_points[i], primaryTarget->m_points[i+1], Scalar(0, 255, 255), 1);
+                if(primaryTarget->m_points.size() > 1) { /* Minimum 2 points ... */
+                    for(int i=0;i<primaryTarget->m_points.size()-1;i++) {
+                        line(outFrame, primaryTarget->m_points[i], primaryTarget->m_points[i+1], Scalar(0, 255, 255), 1);
+                    }
                 }
             }
 #endif
-#ifdef F3F
-/*
-#ifdef VIDEO_OUTPUT_FRAME
-            char str[32];
-            snprintf(str, 32, "Velocity : [%d, %d]", primaryTarget->m_velocity.x, primaryTarget->m_velocity.y);
-            writeText(outFrame, string(str));
-#endif
-*/
             if(primaryTarget->ArcLength() > 120) {
 #ifdef VIDEO_INPUT_FILE
                 if((primaryTarget->m_points[0].x > cx && primaryTarget->LatestPoint().x <= cx) ||
@@ -900,43 +815,42 @@ int main(int argc, char**argv)
                 if((primaryTarget->m_points[0].y > cy && primaryTarget->LatestPoint().y <= cy) ||
                     (primaryTarget->m_points[0].y < cy && primaryTarget->LatestPoint().y >= cy)) {
 #endif //VIDEO_INPUT_FILE
-#ifdef VIDEO_OUTPUT_FRAME
+#ifdef VIDEO_OUTPUT_RESULT_FRAME
+                    if(bVideoOutputScreen || bVideoOutputFile) {
 #ifdef VIDEO_INPUT_FILE
-                    line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
+                        line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
 #else
-                    line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
+                        line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
 #endif //VIDEO_INPUT_FILE
-#endif //VIDEO_OUTPUT_FRAME               
-#ifdef F3F_TTY_BASE
+                    }
+#endif //VIDEO_OUTPUT_RESULT_FRAME               
                     if(primaryTarget->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
-                        base_trigger(ttyFd, primaryTarget->TriggerCount());
+                        if(primaryTarget->TriggerCount() >= MIN_NUM_TRIGGER) /* Ignore first trigger to filter out fake detection */
+                            base_trigger(ttyFd, primaryTarget->TriggerCount() == MIN_NUM_TRIGGER ? true : false); 
                         primaryTarget->Trigger();
                     } else
                         primaryTarget->Reset();
-#endif //F3F_TTY_BASE
-#ifdef JETSON_NANO
                     gpioSetValue(redLED, on);
-#endif //JETSON_NANO
                 }
             }
-#endif //F3F    
         }
 /*
         bsModel->getBackgroundImage(background);
         if (!background.empty())
             imshow("mean background image", background );
 */
-#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
+        if(bVideoOutputScreen || bVideoOutputFile) {
 #ifdef VIDEO_OUTPUT_ORIGINAL_FRAME
-        videoWriterQueue.push(capFrame.clone());
+            videoWriterQueue.push(capFrame.clone());
 #else
-        char str[32];
-        snprintf(str, 32, "FPS : %.2lf", fps);
-        writeText(outFrame, string(str));
+            char str[32];
+            snprintf(str, 32, "FPS : %.2lf", fps);
+            writeText(outFrame, string(str));
 
-        videoWriterQueue.push(outFrame.clone());
+            videoWriterQueue.push(outFrame.clone());
 #endif
-#endif
+        }
+
         if(bShutdown)
             break;
 
@@ -948,21 +862,20 @@ int main(int argc, char**argv)
 
         t1 = high_resolution_clock::now();
     }
-#ifdef JETSON_NANO
+
     gpioSetValue(greenLED, off);
     gpioSetValue(redLED, off);
-#endif
-#if defined(VIDEO_OUTPUT_FILE_NAME) || defined(VIDEO_OUTPUT_SCREEN)
-    if(bPause == false) {
-        videoWriterQueue.cancel();
-        outThread.join();
-    }
-#endif
 
-#ifdef F3F_TTY_BASE
+    if(bVideoOutputScreen || bVideoOutputFile) {
+        if(bPause == false) {
+            videoWriterQueue.cancel();
+            outThread.join();
+        }
+    }
+
     if(ttyFd)
         close(ttyFd);
-#endif
+
     std::cout << "Finished ..." << endl;
 
     return 0;     
