@@ -537,7 +537,7 @@ int main(int argc, char**argv)
 
     int ttyFd = open (ttyName, O_RDWR | O_NOCTTY | O_SYNC);
     if (ttyFd) {
-        set_interface_attribs (ttyFd, B9600, 0);  // set speed to 115,200 bps, 8n1 (no parity)
+        set_interface_attribs (ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
         set_blocking (ttyFd, 0);                // set no blocking
     } else
         printf ("error %d opening %s: %s\n", errno, ttyName, strerror (errno));
@@ -643,14 +643,14 @@ int main(int argc, char**argv)
             int r = read(ttyFd, data, 1); /* Receive trigger from f3f timer */
             if(r == 1) {
                 if(baseType == BASE_A) {
-                    if((data[0] & 0xc0) == 0x00) {
+                    if((data[0] & 0xc0) == 0x80) {
                         uint8_t v = data[0] & 0x3f;
-                        if(v == 0x00) {
+                        if(v == 0x00) { /* BaseA Off - 10xx xxx0 */
                             if(bPause == false) {
                                 bPause = true;
                                 frameCount = 0;
                             }
-                        } else if(v == 0x01) {
+                        } else if(v == 0x01) { /* BaseA On - 10xx xxx1 */
                             if(bPause == true) {
                                 bPause = false;
                                 frameCount = 0;
@@ -658,14 +658,14 @@ int main(int argc, char**argv)
                         }
                     }
                 } else if(baseType == BASE_B) {
-                    if((data[0] & 0xc0) == 0x40) {
+                    if((data[0] & 0xc0) == 0xc0) {
                         uint8_t v = data[0] & 0x3f;
-                        if(v == 0x00) {
+                        if(v == 0x00) { /* BaseB Off - 11xx xxx0 */
                             if(bPause == false) {
                                 bPause = true;
                                 frameCount = 0;
                             }
-                        } else if(v == 0x01) {
+                        } else if(v == 0x01) { /* BaseB On - 11xx xxx1 */
                             if(bPause == true) {
                                 bPause = false;
                                 frameCount = 0;
