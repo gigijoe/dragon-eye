@@ -1,0 +1,12 @@
+Longan is an F3F electronic judging system. It's base on technology of computer vision, capture video stream from camera then detect moving objects and keeps tracking them, once the major tracking target across central vertical line, trigger a signal to timer.
+
+System specification
+@ nVidia Jetson Nano development kit
+@ IMX219 camera module with 160 deg len
+@ 433Mhz / 1W wide band radio module
+@ DC-DC power converter 7~40V to 5V / 5A power
+@ 15000mAh Li-Po battery 
+@ Tripod over 150cm high
+@ buzzer 5V / 85 dbm
+
+
