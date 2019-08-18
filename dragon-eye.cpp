@@ -34,32 +34,33 @@ using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
 
-#define CAMERA_WIDTH 1280
-#define CAMERA_HEIGHT 720
-#define CAMERA_FPS 60
+#define CAMERA_1080P
 
-#define MIN_TARGET_WIDTH 12
-#define MIN_TARGET_HEIGHT 12
-#define MAX_TARGET_WIDTH 320
-#define MAX_TARGET_HEIGHT 320
+#ifdef CAMERA_1080P
+    #define CAMERA_WIDTH 1920
+    #define CAMERA_HEIGHT 1080
+    #define CAMERA_FPS 30
+    #define MIN_TARGET_WIDTH 16
+    #define MIN_TARGET_HEIGHT 16
+    #define MAX_TARGET_WIDTH 480
+    #define MAX_TARGET_HEIGHT 480
+#else
+    #define CAMERA_WIDTH 1280
+    #define CAMERA_HEIGHT 720
+    #define CAMERA_FPS 60
+    #define MIN_TARGET_WIDTH 12
+    #define MIN_TARGET_HEIGHT 12
+    #define MAX_TARGET_WIDTH 320
+    #define MAX_TARGET_HEIGHT 320
+#endif
 
 #define MAX_NUM_TARGET 3
 
-//#define VIDEO_INPUT_FILE "../video/84598.t.mp4"
-//#define VIDEO_INPUT_FILE "../video/84599.t.mp4"
-//#define VIDEO_INPUT_FILE "../video/84600.t.mp4"
-//#define VIDEO_INPUT_FILE "../video/580284764.mp4"
-//#define VIDEO_INPUT_FILE "../video/5609.t.mp4"
-//#define VIDEO_INPUT_FILE "../video/580285079.mp4"
-//#define VIDEO_INPUT_FILE "../video/5610.t.mp4"
-//#define VIDEO_INPUT_FILE "../video/580378201.mp4"
-
-#define VIDEO_OUTPUT_SCREEN
 #define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
-#define VIDEO_OUTPUT_FILE_NAME "video"
+#define VIDEO_OUTPUT_FILE_NAME "longan"
 
-#define VIDEO_OUTPUT_RESULT_FRAME
-//#define VIDEO_OUTPUT_ORIGINAL_FRAME
+//#define VIDEO_OUTPUT_RESULT_FRAME
+#define VIDEO_OUTPUT_ORIGINAL_FRAME
 
 #define MAX_NUM_TRIGGER 6
 #define MIN_NUM_TRIGGER 3
@@ -367,8 +368,11 @@ void FrameQueue::cancel()
 
 void FrameQueue::push(cv::Mat const & image)
 {
-    while(queue_.size() > 30) { /* Prevent memory overflow ... */
-        usleep(1000); /* Wait for 1 ms */
+    uint32_t delayCount = 0;
+    while(queue_.size() >= 30) { /* Prevent memory overflow ... */
+        usleep(10000); /* Wait for 10 ms */
+        if(++delayCount > 3)
+            return; /* Drop frame */
     }
 
     std::unique_lock<std::mutex> mlock(mutex_);
@@ -415,7 +419,7 @@ void VideoWriterThread(int width, int height)
     char filePath[64];
     int videoOutoutIndex = 0;
     while(videoOutoutIndex < 1000) {
-        snprintf(filePath, 64, "%s/%s%03d.mkv", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
+        snprintf(filePath, 64, "%s/%s%c%03d.mkv", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
         FILE *fp = fopen(filePath, "rb");
         if(fp) { /* file exist ... */
             fclose(fp);
@@ -425,18 +429,11 @@ void VideoWriterThread(int width, int height)
     }
 
     if(bVideoOutputFile) {
-#ifdef VIDEO_INPUT_FILE
-        snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
-                   videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-                   nvvidconv ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
-            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
-#else
     /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
         snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-                   nvvidconv flip-method=1 ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%03d.mkv ", 
-            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, videoOutoutIndex);
-#endif //VIDEO_INPUT_FILE
+                   nvvidconv flip-method=1 ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
+            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
         outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
         cout << "Vodeo output " << gstStr << endl;
     }
@@ -511,19 +508,6 @@ int main(int argc, char**argv)
     gpioSetDirection(videoOutputScreenSwitch, inputPin); /* Base A / B */
     gpioSetDirection(videoOutputFileSwitch, inputPin); /* Video output on / off */
 
-    unsigned int gv;
-    gpioGetValue(videoOutputScreenSwitch, &gv);
-    if(gv == 0) /* pull low */
-        bVideoOutputScreen = true; 
-
-    printf("<<< Video output screen : %s\n", bVideoOutputScreen ? "Enable" : "Disable");
-
-    gpioGetValue(videoOutputFileSwitch, &gv);
-    if(gv == 0)
-        bVideoOutputFile = true;
-
-    printf("<<< Video output file : %s\n", bVideoOutputFile ? "Enable" : "Disable");
-
     switch(baseType) {
         case BASE_A: printf("<<< BASE A\n");
             break;
@@ -551,24 +535,55 @@ int main(int argc, char**argv)
     cuda::printShortCudaDeviceInfo(cuda::getDevice());
     std::cout << cv::getBuildInformation() << std::endl;
 
-    static char gstStr[320];
+    static char gstStr[512];
 
-#ifdef VIDEO_INPUT_FILE
-    snprintf(gstStr, 320, "filesrc location=%s ! qtdemux name=demux demux.video_0 ! queue ! "
-        "h264parse ! omxh264dec ! videoconvert ! appsink ", VIDEO_INPUT_FILE);
-    VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
-#else
+/*
+wbmode              : White balance affects the color temperature of the photo
+                        flags: readable, writable
+                        Enum "GstNvArgusCamWBMode" Default: 1, "auto"
+                           (0): off              - GST_NVCAM_WB_MODE_OFF
+                           (1): auto             - GST_NVCAM_WB_MODE_AUTO
+                           (2): incandescent     - GST_NVCAM_WB_MODE_INCANDESCENT
+                           (3): fluorescent      - GST_NVCAM_WB_MODE_FLUORESCENT
+                           (4): warm-fluorescent - GST_NVCAM_WB_MODE_WARM_FLUORESCENT
+                           (5): daylight         - GST_NVCAM_WB_MODE_DAYLIGHT
+                           (6): cloudy-daylight  - GST_NVCAM_WB_MODE_CLOUDY_DAYLIGHT
+                           (7): twilight         - GST_NVCAM_WB_MODE_TWILIGHT
+                           (8): shade            - GST_NVCAM_WB_MODE_SHADE
+                           (9): manual           - GST_NVCAM_WB_MODE_MANUAL
+exposuretimerange   : Property to adjust exposure time range in nanoseconds
+            Use string with values of Exposure Time Range (low, high)
+            in that order, to set the property.
+            eg: exposuretimerange="34000 358733000"
+                        flags: readable, writable
+                        String. Default: null
+    # This sets exposure to 20 ms
+    exposuretimerange="20000000 20000000"
+tnr-mode            : property to select temporal noise reduction mode
+                        flags: readable, writable
+                        Enum "GstNvArgusCamTNRMode" Default: 1, "NoiseReduction_Fast"
+                           (0): NoiseReduction_Off - GST_NVCAM_NR_OFF
+                           (1): NoiseReduction_Fast - GST_NVCAM_NR_FAST
+                           (2): NoiseReduction_HighQuality - GST_NVCAM_NR_HIGHQUALITY
+ee-mode             : property to select edge enhnacement mode
+                        flags: readable, writable
+                        Enum "GstNvArgusCamEEMode" Default: 1, "EdgeEnhancement_Fast"
+                           (0): EdgeEnhancement_Off - GST_NVCAM_EE_OFF
+                           (1): EdgeEnhancement_Fast - GST_NVCAM_EE_FAST
+                           (2): EdgeEnhancement_HighQuality - GST_NVCAM_EE_HIGHQUALITY
+*/
     int index = 0;    
     if(argc > 1)
         index = atoi(argv[1]);
     /* export GST_DEBUG=2 to show debug message */
-    snprintf(gstStr, 320, "nvarguscamerasrc ! video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+    snprintf(gstStr, 512, "nvarguscamerasrc wbmode=6 tnr-mode=2 ee-mode=2 exposuretimerange=\"20000000 20000000\" ! \
+        video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
         nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
         CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
     VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
 
     cout << "Video input " << gstStr << endl;
-#endif
+
     if(!cap.isOpened()) {
         cout << "Could not open video" << endl;
         return 1;
@@ -602,13 +617,8 @@ int main(int argc, char**argv)
         if(bShutdown)
             return 0;
     }
-#ifdef VIDEO_INPUT_FILE
-    cx = (capFrame.cols / 2) - 1;
-    cy = capFrame.rows - 1;
-#else
     cx = capFrame.cols - 1;
     cy = (capFrame.rows / 2) - 1;
-#endif
 
     high_resolution_clock::time_point t1(high_resolution_clock::now());
 
@@ -616,6 +626,7 @@ int main(int argc, char**argv)
     unsigned int vPushButton = 1; /* Initial high */
 
     while(cap.read(capFrame)) {
+        unsigned int gv;
         gpioGetValue(pushButton, &gv);
 
         frameCount++;
@@ -685,6 +696,22 @@ int main(int argc, char**argv)
                 }
             } else {/* Restart, record new video */
                 cout << "Restart ..." << endl;
+                //unsigned int gv;
+                gpioGetValue(videoOutputScreenSwitch, &gv);
+                if(gv == 0) /* pull low */
+                    bVideoOutputScreen = true;
+                else                    
+                    bVideoOutputScreen = false;
+
+                printf("<<< Video output screen : %s\n", bVideoOutputScreen ? "Enable" : "Disable");
+
+                gpioGetValue(videoOutputFileSwitch, &gv);
+                if(gv == 0)
+                    bVideoOutputFile = true;
+                else
+                    bVideoOutputFile = false;
+
+                printf("<<< Video output file : %s\n", bVideoOutputFile ? "Enable" : "Disable");
                 if(bVideoOutputScreen || bVideoOutputFile)
                     outThread = thread(&VideoWriterThread, capFrame.cols, capFrame.rows);
             }
@@ -695,7 +722,7 @@ int main(int argc, char**argv)
                 break;
             gpioSetValue(redLED, off);
             gpioSetValue(greenLED, on);
-            usleep(1000);
+            usleep(10000); /* Wait 10ms */
             continue;
         }
 
@@ -708,11 +735,7 @@ int main(int argc, char**argv)
 #ifdef VIDEO_OUTPUT_RESULT_FRAME
         if(bVideoOutputScreen || bVideoOutputFile) {
             capFrame.copyTo(outFrame);
-#ifdef VIDEO_INPUT_FILE
-            line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 255, 0), 1);
-#else
             line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
-#endif //VIDEO_INPUT_FILE
         }
 #endif //VIDEO_OUTPUT_RESULT_FRAME
         int erosion_size = 6;   
@@ -808,20 +831,11 @@ int main(int argc, char**argv)
             }
 #endif
             if(primaryTarget->ArcLength() > 120) {
-#ifdef VIDEO_INPUT_FILE
-                if((primaryTarget->m_points[0].x > cx && primaryTarget->LatestPoint().x <= cx) ||
-                    (primaryTarget->m_points[0].x < cx && primaryTarget->LatestPoint().x >= cx)) {
-#else
                 if((primaryTarget->m_points[0].y > cy && primaryTarget->LatestPoint().y <= cy) ||
                     (primaryTarget->m_points[0].y < cy && primaryTarget->LatestPoint().y >= cy)) {
-#endif //VIDEO_INPUT_FILE
 #ifdef VIDEO_OUTPUT_RESULT_FRAME
                     if(bVideoOutputScreen || bVideoOutputFile) {
-#ifdef VIDEO_INPUT_FILE
-                        line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
-#else
                         line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
-#endif //VIDEO_INPUT_FILE
                     }
 #endif //VIDEO_OUTPUT_RESULT_FRAME               
                     if(primaryTarget->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
