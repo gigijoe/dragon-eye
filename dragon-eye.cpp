@@ -59,15 +59,14 @@ using std::chrono::microseconds;
 #define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
 #define VIDEO_OUTPUT_FILE_NAME "longan"
 
-//#define VIDEO_OUTPUT_RESULT_FRAME
-#define VIDEO_OUTPUT_ORIGINAL_FRAME
+#undef VIDEO_OUTPUT_RESULT_FRAME
 
-#define MAX_NUM_TRIGGER 6
-#define MIN_NUM_TRIGGER 3
+#define MAX_NUM_TRIGGER 4
+#define MIN_NUM_TRIGGER 1
 
 typedef enum { BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType;
 
-static const BaseType baseType = BASE_B;
+static const BaseType baseType = BASE_A;
 
 static bool bVideoOutputScreen = false;
 static bool bVideoOutputFile = false;
@@ -175,15 +174,6 @@ static inline bool ContoursSort(vector<cv::Point> contour1, vector<cv::Point> co
     //return (contour1.size() > contour2.size()); /* Outline length */
     return (cv::contourArea(contour1) > cv::contourArea(contour2)); /* Area */
 }  
-
-inline void writeText( Mat & mat, const string text )
-{
-    int fontFace = FONT_HERSHEY_SIMPLEX;
-    double fontScale = 1;
-    int thickness = 1;  
-    Point textOrg(40, 40);
-    putText( mat, text, textOrg, fontFace, fontScale, Scalar(0, 255, 0), thickness, cv::LINE_8 );
-}
 
 class Target
 {
@@ -368,11 +358,13 @@ void FrameQueue::cancel()
 
 void FrameQueue::push(cv::Mat const & image)
 {
-    uint32_t delayCount = 0;
-    while(queue_.size() >= 30) { /* Prevent memory overflow ... */
-        usleep(10000); /* Wait for 10 ms */
-        if(++delayCount > 3)
+    //static uint32_t delayCount = 0;
+    while(queue_.size() >= 3) { /* Prevent memory overflow ... */
+        //usleep(10000); /* Wait for 10 ms */
+        //if(++delayCount > 3) {
+        //    delayCount = 0;
             return; /* Drop frame */
+        //}
     }
 
     std::unique_lock<std::mutex> mlock(mutex_);
@@ -494,7 +486,7 @@ int main(int argc, char**argv)
     gpioSetDirection(greenLED, outputPin); /* Flash during frames */
     gpioSetValue(greenLED, on);
 
-    gpioSetDirection(blueLED, outputPin); /* */
+    gpioSetDirection(blueLED, outputPin); /* Unused for now */
     gpioSetValue(blueLED, off);
 
     gpioSetDirection(relayControl, outputPin); /* */
@@ -507,7 +499,26 @@ int main(int argc, char**argv)
     gpioSetDirection(pushButton, inputPin); /* Pause / Restart */
     gpioSetDirection(videoOutputScreenSwitch, inputPin); /* Base A / B */
     gpioSetDirection(videoOutputFileSwitch, inputPin); /* Video output on / off */
-
+#if 0
+    gpioSetEdge(pushButton, "rising");
+    int gfd = gpioOpen(pushButton);
+    if(gfd) {
+        char v;
+        struct pollfd p;
+        p.fd = fd;
+        poll(&p, 1, -1); /* Discard first IRQ */
+        read(fd, &v, 1);
+        while(1) {
+            poll(&p, 1, -1);
+            if((p.revents & POLLPRI) == POLLPRI) {
+                lseek(fd, 0, SEEK_SET);
+                read(fd, &v, 1);
+                // printf("Interrup GPIO value : %c\n", v);
+            }
+        }
+        gpioCloae(gfd);
+    }
+#endif
     switch(baseType) {
         case BASE_A: printf("<<< BASE A\n");
             break;
@@ -576,13 +587,26 @@ ee-mode             : property to select edge enhnacement mode
     if(argc > 1)
         index = atoi(argv[1]);
     /* export GST_DEBUG=2 to show debug message */
-    snprintf(gstStr, 512, "nvarguscamerasrc wbmode=6 tnr-mode=2 ee-mode=2 exposuretimerange=\"20000000 20000000\" ! \
+/*
+    snprintf(gstStr, 512, "nvarguscamerasrc wbmode=5 tnr-mode=2 ee-mode=2 exposuretimerange=\"5000000 10000000\" ! \
         video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
         nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
         CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
     VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
+*/
+    snprintf(gstStr, 512, "nvarguscamerasrc wbmode=5 tnr-mode=2 ee-mode=2 ! \
+        video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+/*
+    snprintf(gstStr, 512, "v4l2src device=/dev/video1 ! \
+        video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+*/
+    VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
 
-    cout << "Video input " << gstStr << endl;
+    cout << "Video input : " << gstStr << endl;
 
     if(!cap.isOpened()) {
         cout << "Could not open video" << endl;
@@ -625,6 +649,10 @@ ee-mode             : property to select edge enhnacement mode
     uint64_t frameCount = 0;
     unsigned int vPushButton = 1; /* Initial high */
 
+    cout << endl;
+    cout << "### Press button to start object tracking !!!" << endl;
+    cout << endl;
+
     while(cap.read(capFrame)) {
         unsigned int gv;
         gpioGetValue(pushButton, &gv);
@@ -640,7 +668,7 @@ ee-mode             : property to select edge enhnacement mode
             frameCount = 0;
         }
         vPushButton = gv;
-
+#if 0
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(ttyFd, &rfds);
@@ -686,16 +714,19 @@ ee-mode             : property to select edge enhnacement mode
                 }
             }
         }
-
+#endif
         if(frameCount == 0) { /* suspend or resume */
             if(bPause) {
-                cout << "Paused ..." << endl;
+                cout << endl;
+                cout << "### Object tracking stoped !!!" << endl;
+                cout << endl;
                 if(bVideoOutputScreen || bVideoOutputFile) {
                     videoWriterQueue.cancel();
                     outThread.join();
                 }
             } else {/* Restart, record new video */
-                cout << "Restart ..." << endl;
+                cout << endl;
+                cout << "### Object tracking started !!!" << endl;
                 //unsigned int gv;
                 gpioGetValue(videoOutputScreenSwitch, &gv);
                 if(gv == 0) /* pull low */
@@ -703,7 +734,7 @@ ee-mode             : property to select edge enhnacement mode
                 else                    
                     bVideoOutputScreen = false;
 
-                printf("<<< Video output screen : %s\n", bVideoOutputScreen ? "Enable" : "Disable");
+                printf("### Video output screen : %s\n", bVideoOutputScreen ? "Enable" : "Disable");
 
                 gpioGetValue(videoOutputFileSwitch, &gv);
                 if(gv == 0)
@@ -711,7 +742,8 @@ ee-mode             : property to select edge enhnacement mode
                 else
                     bVideoOutputFile = false;
 
-                printf("<<< Video output file : %s\n", bVideoOutputFile ? "Enable" : "Disable");
+                printf("### Video output file : %s\n", bVideoOutputFile ? "Enable" : "Disable");
+                cout << endl;
                 if(bVideoOutputScreen || bVideoOutputFile)
                     outThread = thread(&VideoWriterThread, capFrame.cols, capFrame.rows);
             }
@@ -721,6 +753,7 @@ ee-mode             : property to select edge enhnacement mode
             if(bShutdown)
                 break;
             gpioSetValue(redLED, off);
+            gpioSetValue(relayControl, off);
             gpioSetValue(greenLED, on);
             usleep(10000); /* Wait 10ms */
             continue;
@@ -731,6 +764,7 @@ ee-mode             : property to select edge enhnacement mode
         else
             gpioSetValue(greenLED, off);
 
+//        if(bVideoOutputFile == false) {
         cvtColor(capFrame, frame, COLOR_BGR2GRAY);
 #ifdef VIDEO_OUTPUT_RESULT_FRAME
         if(bVideoOutputScreen || bVideoOutputFile) {
@@ -815,6 +849,7 @@ ee-mode             : property to select edge enhnacement mode
         tracker.Update(frame, roiRect);
 
         gpioSetValue(redLED, off);
+        gpioSetValue(relayControl, off);
 
         primaryTarget = tracker.PrimaryTarget();
         if(primaryTarget) {
@@ -837,31 +872,39 @@ ee-mode             : property to select edge enhnacement mode
                     if(bVideoOutputScreen || bVideoOutputFile) {
                         line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
                     }
-#endif //VIDEO_OUTPUT_RESULT_FRAME               
+#endif
                     if(primaryTarget->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
-                        if(primaryTarget->TriggerCount() >= MIN_NUM_TRIGGER) /* Ignore first trigger to filter out fake detection */
+                        if(primaryTarget->TriggerCount() >= MIN_NUM_TRIGGER) { /* Ignore first trigger to filter out fake detection */
                             base_trigger(ttyFd, primaryTarget->TriggerCount() == MIN_NUM_TRIGGER ? true : false); 
+                            gpioSetValue(redLED, on);
+                            gpioSetValue(relayControl, on);
+                        }
                         primaryTarget->Trigger();
                     } else
                         primaryTarget->Reset();
-                    gpioSetValue(redLED, on);
                 }
             }
         }
+//        } /* bVideoOutputFile */
 /*
         bsModel->getBackgroundImage(background);
         if (!background.empty())
             imshow("mean background image", background );
 */
         if(bVideoOutputScreen || bVideoOutputFile) {
-#ifdef VIDEO_OUTPUT_ORIGINAL_FRAME
-            videoWriterQueue.push(capFrame.clone());
-#else
+#ifdef VIDEO_OUTPUT_RESULT_FRAME
             char str[32];
             snprintf(str, 32, "FPS : %.2lf", fps);
-            writeText(outFrame, string(str));
+
+            int fontFace = FONT_HERSHEY_SIMPLEX;
+            const double fontScale = 1;
+            const int thicknessScale = 1;  
+            Point textOrg(40, 40);
+            putText(outFrame, string(str), textOrg, fontFace, fontScale, Scalar(0, 255, 0), thicknessScale, cv::LINE_8);
 
             videoWriterQueue.push(outFrame.clone());
+#else
+            videoWriterQueue.push(capFrame.clone());
 #endif
         }
 
@@ -879,6 +922,7 @@ ee-mode             : property to select edge enhnacement mode
 
     gpioSetValue(greenLED, off);
     gpioSetValue(redLED, off);
+    gpioSetValue(relayControl, off);
 
     if(bVideoOutputScreen || bVideoOutputFile) {
         if(bPause == false) {
