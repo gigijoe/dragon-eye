@@ -59,17 +59,18 @@ using std::chrono::microseconds;
 #define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
 #define VIDEO_OUTPUT_FILE_NAME "longan"
 
-#undef VIDEO_OUTPUT_RESULT_FRAME
+//#undef VIDEO_OUTPUT_RESULT_FRAME
 
 #define MAX_NUM_TRIGGER 4
 #define MIN_NUM_TRIGGER 1
 
 typedef enum { BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType;
 
-static const BaseType baseType = BASE_A;
+static BaseType baseType = BASE_A;
 
 static bool bVideoOutputScreen = false;
 static bool bVideoOutputFile = false;
+static bool bVideoOutputResult = false;
 static bool bShutdown = false;
 static bool bPause = true;
 
@@ -460,6 +461,9 @@ void VideoWriterThread(int width, int height)
 
 int main(int argc, char**argv)
 {
+    cuda::printShortCudaDeviceInfo(cuda::getDevice());
+    std::cout << cv::getBuildInformation() << std::endl;
+
     double fps = 0;
 
     jetsonNanoGPIONumber redLED = gpio16; // Ouput
@@ -471,6 +475,9 @@ int main(int argc, char**argv)
     jetsonNanoGPIONumber videoOutputScreenSwitch = gpio19; // Input
     jetsonNanoGPIONumber videoOutputFileSwitch = gpio20; // Input
 
+    jetsonNanoGPIONumber baseSwitch = gpio12; /* Input */
+    jetsonNanoGPIONumber videoOutputResultSwitch = gpio13; /* Input */
+
     /* 
     * Do enable GPIO by /etc/profile.d/export-gpio.sh 
     */
@@ -480,13 +487,13 @@ int main(int argc, char**argv)
     gpioExport(blueLED);
     gpioExport(relayControl);
 
-    gpioSetDirection(redLED, outputPin); /* Red LED on while detection */
+    gpioSetDirection(redLED, outputPin); /* While object detected */
     gpioSetValue(redLED, off);
 
     gpioSetDirection(greenLED, outputPin); /* Flash during frames */
     gpioSetValue(greenLED, on);
 
-    gpioSetDirection(blueLED, outputPin); /* Unused for now */
+    gpioSetDirection(blueLED, outputPin); /* Flash during file save */
     gpioSetValue(blueLED, off);
 
     gpioSetDirection(relayControl, outputPin); /* */
@@ -496,9 +503,15 @@ int main(int argc, char**argv)
     gpioExport(videoOutputScreenSwitch);
     gpioExport(videoOutputFileSwitch);
 
+    gpioExport(baseSwitch);
+    gpioExport(videoOutputResultSwitch);
+
     gpioSetDirection(pushButton, inputPin); /* Pause / Restart */
     gpioSetDirection(videoOutputScreenSwitch, inputPin); /* Base A / B */
     gpioSetDirection(videoOutputFileSwitch, inputPin); /* Video output on / off */
+
+    gpioSetDirection(baseSwitch, inputPin);
+    gpioSetDirection(videoOutputResultSwitch, inputPin);
 #if 0
     gpioSetEdge(pushButton, "rising");
     int gfd = gpioOpen(pushButton);
@@ -519,15 +532,6 @@ int main(int argc, char**argv)
         gpioCloae(gfd);
     }
 #endif
-    switch(baseType) {
-        case BASE_A: printf("<<< BASE A\n");
-            break;
-        case BASE_B: printf("<<< BASE B\n");
-            break;
-        default: printf("<<< BASE Unknown\n");
-            break;
-    }
-
     const char *ttyName = "/dev/ttyTHS1";
 
     int ttyFd = open (ttyName, O_RDWR | O_NOCTTY | O_SYNC);
@@ -542,9 +546,6 @@ int main(int argc, char**argv)
 
     Mat frame, capFrame;
     cuda::GpuMat gpuFrame;
-
-    cuda::printShortCudaDeviceInfo(cuda::getDevice());
-    std::cout << cv::getBuildInformation() << std::endl;
 
     static char gstStr[512];
 
@@ -617,15 +618,15 @@ ee-mode             : property to select edge enhnacement mode
 
     //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorKNN();
     //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorMOG2();
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(30, 16, false);
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(60, 16, false); /* background history count, varThreshold, shadow detection */
 
     bool doUpdateModel = true;
     bool doSmoothMask = true;
 
     Mat foregroundMask, background;
-#ifdef VIDEO_OUTPUT_RESULT_FRAME
+//#ifdef VIDEO_OUTPUT_RESULT_FRAME
     Mat outFrame;
-#endif
+//#endif
     cuda::GpuMat gpuForegroundMask;
     Ptr<cuda::Filter> gaussianFilter;
     Ptr<cuda::Filter> erodeFilter;
@@ -646,22 +647,56 @@ ee-mode             : property to select edge enhnacement mode
 
     high_resolution_clock::time_point t1(high_resolution_clock::now());
 
-    uint64_t frameCount = 0;
-    unsigned int vPushButton = 1; /* Initial high */
+    unsigned int gv;
+    gpioGetValue(baseSwitch, &gv);
+
+    if(gv == 0) 
+        baseType = BASE_A;
+    else
+        baseType = BASE_B;
+
+    cout << endl;
+    printf("### BASE %c\n", gv ? 'B' : 'A');
+
+    gpioGetValue(videoOutputScreenSwitch, &gv);
+    if(gv == 0) /* pull low */
+        bVideoOutputScreen = true;
+    else                    
+        bVideoOutputScreen = false;
+
+    printf("### Video output screen : %s\n", bVideoOutputScreen ? "Enable" : "Disable");
+
+    gpioGetValue(videoOutputFileSwitch, &gv);
+    if(gv == 0)
+        bVideoOutputFile = true;
+    else
+        bVideoOutputFile = false;
+
+    printf("### Video output file : %s\n", bVideoOutputFile ? "Enable" : "Disable");
+
+    gpioGetValue(videoOutputResultSwitch, &gv);
+    if(gv == 0)
+        bVideoOutputResult = true;
+    else
+        bVideoOutputResult = false;                
+
+    printf("### Video output result : %s\n", bVideoOutputResult ? "Enable" : "Disable");
 
     cout << endl;
     cout << "### Press button to start object tracking !!!" << endl;
     cout << endl;
 
+    uint64_t frameCount = 0;
+    unsigned int vPushButton = 1; /* Initial high */
+
     while(cap.read(capFrame)) {
-        unsigned int gv;
         gpioGetValue(pushButton, &gv);
 
         frameCount++;
 
         if(gv == 1 && vPushButton == 0) { /* Raising edge */
             if(frameCount < 30) { /* Button debunce */
-                usleep(1000);
+                usleep(10000);
                 continue;
             }
             bPause = !bPause;
@@ -725,9 +760,16 @@ ee-mode             : property to select edge enhnacement mode
                     outThread.join();
                 }
             } else {/* Restart, record new video */
+                gpioGetValue(baseSwitch, &gv);
+/*
+                if(gv == 0) 
+                    baseType = BASE_A;
+                else
+                    baseType = BASE_B;
+
                 cout << endl;
-                cout << "### Object tracking started !!!" << endl;
-                //unsigned int gv;
+                printf("### BASE %c\n", gv ? 'B' : 'A');
+*/
                 gpioGetValue(videoOutputScreenSwitch, &gv);
                 if(gv == 0) /* pull low */
                     bVideoOutputScreen = true;
@@ -743,6 +785,17 @@ ee-mode             : property to select edge enhnacement mode
                     bVideoOutputFile = false;
 
                 printf("### Video output file : %s\n", bVideoOutputFile ? "Enable" : "Disable");
+
+                gpioGetValue(videoOutputResultSwitch, &gv);
+                if(gv == 0)
+                    bVideoOutputResult = true;
+                else
+                    bVideoOutputResult = false;                
+
+                printf("### Video output result : %s\n", bVideoOutputResult ? "Enable" : "Disable");
+
+                cout << endl;
+                cout << "### Object tracking started !!!" << endl;
                 cout << endl;
                 if(bVideoOutputScreen || bVideoOutputFile)
                     outThread = thread(&VideoWriterThread, capFrame.cols, capFrame.rows);
@@ -752,26 +805,35 @@ ee-mode             : property to select edge enhnacement mode
         if(bPause) {
             if(bShutdown)
                 break;
-            gpioSetValue(redLED, off);
+            gpioSetValue(redLED, off); /* While object detected */
             gpioSetValue(relayControl, off);
-            gpioSetValue(greenLED, on);
+            gpioSetValue(greenLED, on); /* Flash during frames */
+            if(bVideoOutputFile)
+                gpioSetValue(blueLED, on);
             usleep(10000); /* Wait 10ms */
             continue;
         }
 
-        if(frameCount % 2 == 0)
-            gpioSetValue(greenLED, on);
-        else
-            gpioSetValue(greenLED, off);
+        if(frameCount % 2 == 0) {
+            gpioSetValue(greenLED, on); /* Flash during frames */
+            if(bVideoOutputFile)
+                gpioSetValue(blueLED, on);
+        } else {
+            gpioSetValue(greenLED, off); /* Flash during frames */
+            if(bVideoOutputFile)
+                gpioSetValue(blueLED, off);
+        }
 
 //        if(bVideoOutputFile == false) {
         cvtColor(capFrame, frame, COLOR_BGR2GRAY);
-#ifdef VIDEO_OUTPUT_RESULT_FRAME
-        if(bVideoOutputScreen || bVideoOutputFile) {
-            capFrame.copyTo(outFrame);
-            line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
+//#ifdef VIDEO_OUTPUT_RESULT_FRAME
+        if(bVideoOutputResult) {
+            if(bVideoOutputScreen || bVideoOutputFile) {
+                capFrame.copyTo(outFrame);
+                line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
+            }
         }
-#endif //VIDEO_OUTPUT_RESULT_FRAME
+//#endif //VIDEO_OUTPUT_RESULT_FRAME
         int erosion_size = 6;   
         Mat element = cv::getStructuringElement(cv::MORPH_RECT,
                           cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
@@ -835,12 +897,14 @@ ee-mode             : property to select edge enhnacement mode
                 boundRect[i].height <= MAX_TARGET_HEIGHT) {
 
                     roiRect.push_back(boundRect[i]);
-#ifdef VIDEO_OUTPUT_RESULT_FRAME
-                    if(bVideoOutputScreen || bVideoOutputFile) {
-                        Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
-                        rectangle( outFrame, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0 );
+//#ifdef VIDEO_OUTPUT_RESULT_FRAME
+                    if(bVideoOutputResult) {
+                        if(bVideoOutputScreen || bVideoOutputFile) {
+                            Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
+                            rectangle( outFrame, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0 );
+                        }
                     }
-#endif
+//#endif
     		}
             if(roiRect.size() >= MAX_NUM_TARGET) /* Deal top 5 only */
                 break;
@@ -853,26 +917,28 @@ ee-mode             : property to select edge enhnacement mode
 
         primaryTarget = tracker.PrimaryTarget();
         if(primaryTarget) {
-#ifdef VIDEO_OUTPUT_RESULT_FRAME
-            if(bVideoOutputScreen || bVideoOutputFile) {
-                Rect r = primaryTarget->m_rects.back();
-                rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
-
-                if(primaryTarget->m_points.size() > 1) { /* Minimum 2 points ... */
-                    for(int i=0;i<primaryTarget->m_points.size()-1;i++) {
-                        line(outFrame, primaryTarget->m_points[i], primaryTarget->m_points[i+1], Scalar(0, 255, 255), 1);
+//#ifdef VIDEO_OUTPUT_RESULT_FRAME
+            if(bVideoOutputResult) {
+                if(bVideoOutputScreen || bVideoOutputFile) {
+                    Rect r = primaryTarget->m_rects.back();
+                    rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
+                    if(primaryTarget->m_points.size() > 1) { /* Minimum 2 points ... */
+                        for(int i=0;i<primaryTarget->m_points.size()-1;i++) {
+                            line(outFrame, primaryTarget->m_points[i], primaryTarget->m_points[i+1], Scalar(0, 255, 255), 1);
+                        }
                     }
                 }
             }
-#endif
+//#endif
             if(primaryTarget->ArcLength() > 120) {
                 if((primaryTarget->m_points[0].y > cy && primaryTarget->LatestPoint().y <= cy) ||
                     (primaryTarget->m_points[0].y < cy && primaryTarget->LatestPoint().y >= cy)) {
-#ifdef VIDEO_OUTPUT_RESULT_FRAME
-                    if(bVideoOutputScreen || bVideoOutputFile) {
-                        line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
+//#ifdef VIDEO_OUTPUT_RESULT_FRAME
+                    if(bVideoOutputResult) {
+                        if(bVideoOutputScreen || bVideoOutputFile)
+                            line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
                     }
-#endif
+//#endif
                     if(primaryTarget->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
                         if(primaryTarget->TriggerCount() >= MIN_NUM_TRIGGER) { /* Ignore first trigger to filter out fake detection */
                             base_trigger(ttyFd, primaryTarget->TriggerCount() == MIN_NUM_TRIGGER ? true : false); 
@@ -892,20 +958,21 @@ ee-mode             : property to select edge enhnacement mode
             imshow("mean background image", background );
 */
         if(bVideoOutputScreen || bVideoOutputFile) {
-#ifdef VIDEO_OUTPUT_RESULT_FRAME
-            char str[32];
-            snprintf(str, 32, "FPS : %.2lf", fps);
-
-            int fontFace = FONT_HERSHEY_SIMPLEX;
-            const double fontScale = 1;
-            const int thicknessScale = 1;  
-            Point textOrg(40, 40);
-            putText(outFrame, string(str), textOrg, fontFace, fontScale, Scalar(0, 255, 0), thicknessScale, cv::LINE_8);
-
-            videoWriterQueue.push(outFrame.clone());
-#else
-            videoWriterQueue.push(capFrame.clone());
-#endif
+//#ifdef VIDEO_OUTPUT_RESULT_FRAME
+            if(bVideoOutputResult) {
+                char str[32];
+                snprintf(str, 32, "FPS : %.2lf", fps);
+                int fontFace = FONT_HERSHEY_SIMPLEX;
+                const double fontScale = 1;
+                const int thicknessScale = 1;  
+                Point textOrg(40, 40);
+                putText(outFrame, string(str), textOrg, fontFace, fontScale, Scalar(0, 255, 0), thicknessScale, cv::LINE_8);
+                videoWriterQueue.push(outFrame.clone());
+            } else {
+//#else
+                videoWriterQueue.push(capFrame.clone());
+            }
+//#endif
         }
 
         if(bShutdown)
@@ -920,8 +987,9 @@ ee-mode             : property to select edge enhnacement mode
         t1 = high_resolution_clock::now();
     }
 
-    gpioSetValue(greenLED, off);
-    gpioSetValue(redLED, off);
+    gpioSetValue(greenLED, off); /* Flash during frames */
+    gpioSetValue(blueLED, off); /* Flash during file save */
+    gpioSetValue(redLED, off); /* While object detected */
     gpioSetValue(relayControl, off);
 
     if(bVideoOutputScreen || bVideoOutputFile) {
