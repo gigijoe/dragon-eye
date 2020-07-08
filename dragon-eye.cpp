@@ -34,35 +34,35 @@ using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
 
-#define CAMERA_1080P
+//#define CAMERA_1080P
 
 #ifdef CAMERA_1080P
     #define CAMERA_WIDTH 1920
     #define CAMERA_HEIGHT 1080
     #define CAMERA_FPS 30
-    #define MIN_TARGET_WIDTH 16
-    #define MIN_TARGET_HEIGHT 16
+    #define MIN_TARGET_WIDTH 12
+    #define MIN_TARGET_HEIGHT 12
     #define MAX_TARGET_WIDTH 480
     #define MAX_TARGET_HEIGHT 480
 #else
     #define CAMERA_WIDTH 1280
     #define CAMERA_HEIGHT 720
     #define CAMERA_FPS 60
-    #define MIN_TARGET_WIDTH 12
-    #define MIN_TARGET_HEIGHT 12
+    #define MIN_TARGET_WIDTH 8
+    #define MIN_TARGET_HEIGHT 8
     #define MAX_TARGET_WIDTH 320
     #define MAX_TARGET_HEIGHT 320
 #endif
 
-#define MAX_NUM_TARGET 3
+#define MAX_NUM_TARGET 3                /* Maximum targets to tracing */
+#define MAX_NUM_TRIGGER 4               /* Maximum number of RF trigger after detection of cross line */
+#define MAX_NUM_FRAME_MISSING_TARGET 10 /* Maximum number of frames to keep tracing lost target */
+
+#define MIN_COURSE_LENGTH 120           /* Minimum course length of RF trigger after detection of cross line */
+#define MIN_TARGET_TRACKED_COUNT 3      /* Minimum target tracked count of RF trigger after detection of cross line */
 
 #define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
-#define VIDEO_OUTPUT_FILE_NAME "longan"
-
-//#undef VIDEO_OUTPUT_RESULT_FRAME
-
-#define MAX_NUM_TRIGGER 4
-#define MIN_NUM_TRIGGER 1
+#define VIDEO_OUTPUT_FILE_NAME "sB"
 
 typedef enum { BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType;
 
@@ -73,6 +73,8 @@ static bool bVideoOutputFile = false;
 static bool bVideoOutputResult = false;
 static bool bShutdown = false;
 static bool bPause = true;
+
+static uint64_t frameCount = 0;
 
 void sig_handler(int signo)
 {
@@ -107,7 +109,8 @@ static int set_interface_attribs (int fd, int speed, int parity)
                                     // no canonical processing
     tty.c_oflag = 0;                // no remapping, no delays
     tty.c_cc[VMIN]  = 0;            // read doesn't block
-    tty.c_cc[VTIME] = 5;            // 0.5 seconds read timeout
+    //tty.c_cc[VTIME] = 1;            // 0.1 seconds read timeout
+    tty.c_cc[VTIME] = 0;            // Non block read
 
     tty.c_iflag &= ~(IXON | IXOFF | IXANY); // shut off xon/xoff ctrl
 
@@ -123,23 +126,6 @@ static int set_interface_attribs (int fd, int speed, int parity)
         return -1;
     }
     return 0;
-}
-
-static void set_blocking(int fd, int should_block)
-{
-    struct termios tty;
-    memset (&tty, 0, sizeof tty);
-    if (tcgetattr (fd, &tty) != 0)
-    {
-            printf ("error %d from tggetattr\n", errno);
-            return;
-    }
-
-    tty.c_cc[VMIN]  = should_block ? 1 : 0;
-    tty.c_cc[VTIME] = 5;            // 0.5 seconds read timeout
-
-    if (tcsetattr (fd, TCSANOW, &tty) != 0)
-            printf ("error %d setting term attributes\n", errno);
 }
 
 static void base_trigger(int fd, bool newTrigger) 
@@ -176,15 +162,19 @@ static inline bool ContoursSort(vector<cv::Point> contour1, vector<cv::Point> co
     return (cv::contourArea(contour1) > cv::contourArea(contour2)); /* Area */
 }  
 
+/*
+*
+*/
+
 class Target
 {
 protected:
-    double m_arcLength;
+    double m_courseLength;
     unsigned long m_frameTick;
     uint8_t m_triggerCount;
 
 public:
-    Target(Rect & roi, unsigned long frameTick) : m_arcLength(0), m_frameTick(frameTick), m_triggerCount(0) {
+    Target(Rect & roi, unsigned long frameTick) : m_courseLength(0), m_frameTick(frameTick), m_triggerCount(0) {
         m_rects.push_back(roi);
         m_points.push_back(roi.tl());
         m_frameTick = frameTick;
@@ -196,7 +186,7 @@ public:
 
     void Update(Rect & roi, unsigned long frameTick) {
         if(m_rects.size() > 0)
-            m_arcLength += norm(roi.tl() - m_rects.back().tl());
+            m_courseLength += norm(roi.tl() - m_rects.back().tl());
 
         if(m_points.size() == 1) {
             m_velocity.x = (roi.tl().x - m_rects.back().tl().x);
@@ -209,7 +199,7 @@ public:
         m_points.push_back(roi.tl());
         m_frameTick = frameTick;
     }
-
+#if 0
     void Reset() {
         Rect r = m_rects.back();
         Point p = r.tl();
@@ -219,16 +209,17 @@ public:
         m_points.push_back(p);
         m_triggerCount = 0;
         //m_frameTick =
-        m_arcLength = 0; /* TODO : Do clear this ? */
+        m_courseLength = 0; /* TODO : Do clear this ? */
     }
-
-    inline double ArcLength() { return m_arcLength; }
+#endif
+    inline double CourseLength() { return m_courseLength; }
     inline unsigned long FrameTick() { return m_frameTick; }
     inline Rect & LatestRect() { return m_rects.back(); }
     inline Point & LatestPoint() { return m_points.back(); }
     inline void Trigger() { m_triggerCount++; }
     inline uint8_t TriggerCount() { return m_triggerCount; }
     //inline Point & Velocity() { return m_velocity; }
+    inline size_t TrackedCount() { return m_rects.size(); }
 };
 
 static inline bool TargetSort(Target & a, Target & b)
@@ -236,19 +227,47 @@ static inline bool TargetSort(Target & a, Target & b)
     return a.LatestRect().area() > b.LatestRect().area();
 }
 
-#define MAX_NUM_FRAME_MISSING_TARGET 15
+/*
+*
+*/
 
 class Tracker
 {
 private:
     unsigned long m_frameTick;
+    list< Target > m_targets;
+    Target *m_primaryTarget;
 
 public:
-    Tracker() : m_frameTick(0) {}
+    Tracker() : m_frameTick(0), m_primaryTarget(0) {}
 
-    list< Target > m_targets;
+    void Update(vector< Rect > & roiRect) {
+        const int euclidean_distance = 120;
 
-    void Update(Mat & frame, vector< Rect > & roiRect) {
+        if(m_primaryTarget) {
+            Target *t = m_primaryTarget;
+            int i;
+            for(i=0; i<roiRect.size(); i++) {
+                Rect r = t->m_rects.back();
+                if((r & roiRect[i]).area() > 0) /* Target tracked by region overlap  */
+                    break;                
+
+                unsigned long f = m_frameTick - t->FrameTick();
+                r.x += t->m_velocity.x * f;
+                r.y += t->m_velocity.y * f;
+                if((r & roiRect[i]).area() > 0) /* Target tracked by velocity ... */
+                    break;
+
+                r = t->m_rects.back();
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked by Euclidean distance ... */
+                    break;
+            }
+            if(i != roiRect.size()) { /* Primary Target tracked */
+                t->Update(roiRect[i], m_frameTick);
+                return;
+            }
+        }
+
         for(list< Target >::iterator t=m_targets.begin();t!=m_targets.end();) { /* Try to find lost targets */
             int i;
             for(i=0; i<roiRect.size(); i++) {
@@ -261,6 +280,10 @@ public:
                 r.y += t->m_velocity.y * f;
                 if((r & roiRect[i]).area() > 0) /* Target tracked with velocity ... */
                     break;
+
+                r = t->m_rects.back();
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with Euclidean distance ... */
+                    break;
             }
             if(i == roiRect.size()) { /* Target missing ... */
                 if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) { /* Target still missing for over X frames */
@@ -268,6 +291,9 @@ public:
                     Point p = t->m_points.back();
                     printf("lost target : %d, %d\n", p.x, p.y);
 #endif
+                    if(&(*t) == m_primaryTarget)
+                        m_primaryTarget = 0;
+
                     t = m_targets.erase(t); /* Remove tracing target */
                     continue;
                 }
@@ -279,48 +305,45 @@ public:
             list< Target >::iterator t;
             for(t=m_targets.begin();t!=m_targets.end();t++) {
                 Rect r = t->m_rects.back();
-                if((r & roiRect[i]).area() > 0) { /* Next step tracked ... */
-                    t->Update(roiRect[i], m_frameTick);
+                if((r & roiRect[i]).area() > 0) /* Next step tracked ... */
                     break;
-                }
 
                 unsigned long f = m_frameTick - t->FrameTick();
                 r.x += t->m_velocity.x * f;
                 r.y += t->m_velocity.y * f;
-                if((r & roiRect[i]).area() > 0) { /* Next step tracked with velocity ... */
-                    t->Update(roiRect[i], m_frameTick);
+                if((r & roiRect[i]).area() > 0) /* Next step tracked with velocity ... */
                     break;
-                }
-            }
-            if(t == m_targets.end()) { /* New target */
-                for(t=m_targets.begin();t!=m_targets.end();t++) { /* Check if exist target */
-                    Rect r = t->m_rects.back();
-                    unsigned long f = m_frameTick - t->FrameTick();
-                    r.x += t->m_velocity.x * f;
-                    r.y += t->m_velocity.y * f;
 
-                    if(cv::norm(r.tl()-roiRect[i].tl()) < 120) { /* Target tracked with Euclidean distance ... */
-                        t->Update(roiRect[i], m_frameTick);
-                        break;
-                    }
-                }
-                if(t == m_targets.end()) { /* New target */
-                    m_targets.push_back(Target(roiRect[i], m_frameTick));
-#ifdef DEBUG            
-                    printf("new target : %d, %d\n", roiRect[i].tl().x, roiRect[i].tl().y);
-#endif
-                }
+                r = t->m_rects.back();
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with Euclidean distance ... */                    
+                    break;
             }
+
+            if(t == m_targets.end()) { /* New target */
+                m_targets.push_back(Target(roiRect[i], m_frameTick));
+#ifdef DEBUG            
+                printf("new target : %d, %d\n", roiRect[i].tl().x, roiRect[i].tl().y);
+#endif
+            } else
+                t->Update(roiRect[i], m_frameTick);
         }
         m_frameTick++;
+
+        if(m_targets.size() > 1)
+            m_targets.sort(TargetSort);
+
+        if(m_targets.size() > 0) {
+            if(m_primaryTarget == 0)
+                m_primaryTarget = &m_targets.front();
+        }
     }
 
     Target *PrimaryTarget() {
         if(m_targets.size() == 0)
             return 0;
 
-        m_targets.sort(TargetSort);
-        return &m_targets.front();
+        //m_targets.sort(TargetSort);
+        return m_primaryTarget;
     }
 };
 
@@ -361,7 +384,7 @@ void FrameQueue::push(cv::Mat const & image)
 {
     //static uint32_t delayCount = 0;
     while(queue_.size() >= 3) { /* Prevent memory overflow ... */
-        //usleep(10000); /* Wait for 10 ms */
+        //usleep(10000000); /* Wait for 10 ms */
         //if(++delayCount > 3) {
         //    delayCount = 0;
             return; /* Drop frame */
@@ -400,7 +423,7 @@ void FrameQueue::reset()
 *
 */
 
-FrameQueue videoWriterQueue;
+static FrameQueue videoWriterQueue;
 
 void VideoWriterThread(int width, int height)
 {    
@@ -425,7 +448,7 @@ void VideoWriterThread(int width, int height)
     /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
         snprintf(gstStr, 320, "appsrc ! video/x-raw, format=(string)BGR ! \
                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-                   nvvidconv flip-method=1 ! omxh265enc preset-level=3 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
+                   nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
             30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
         outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
         cout << "Vodeo output " << gstStr << endl;
@@ -459,262 +482,219 @@ void VideoWriterThread(int width, int height)
     }    
 }
 
-int main(int argc, char**argv)
-{
-    cuda::printShortCudaDeviceInfo(cuda::getDevice());
-    std::cout << cv::getBuildInformation() << std::endl;
+static jetsonNanoGPIONumber redLED = gpio16; // Ouput
+static jetsonNanoGPIONumber greenLED = gpio17; // Ouput
+static jetsonNanoGPIONumber blueLED = gpio50; // Ouput
+static jetsonNanoGPIONumber relayControl = gpio51; // Ouput
 
-    double fps = 0;
+static jetsonNanoGPIONumber videoOutputScreenSwitch = gpio19; // Input
+static jetsonNanoGPIONumber videoOutputFileSwitch = gpio20; // Input
 
-    jetsonNanoGPIONumber redLED = gpio16; // Ouput
-    jetsonNanoGPIONumber greenLED = gpio17; // Ouput
-    jetsonNanoGPIONumber blueLED = gpio50; // Ouput
-    jetsonNanoGPIONumber relayControl = gpio51; // Ouput
+static jetsonNanoGPIONumber baseSwitch = gpio12; /* Input */
+static jetsonNanoGPIONumber videoOutputResultSwitch = gpio13; /* Input */
+static jetsonNanoGPIONumber pushButton = gpio18; // Input
 
-    jetsonNanoGPIONumber pushButton = gpio18; // Input
-    jetsonNanoGPIONumber videoOutputScreenSwitch = gpio19; // Input
-    jetsonNanoGPIONumber videoOutputFileSwitch = gpio20; // Input
+static thread outThread;
 
-    jetsonNanoGPIONumber baseSwitch = gpio12; /* Input */
-    jetsonNanoGPIONumber videoOutputResultSwitch = gpio13; /* Input */
+class RF_Base {
+private:
+    int m_ttyFd;
+    int m_videoWidth, m_videoHeight;
+    unsigned int vPushButton;
 
-    /* 
-    * Do enable GPIO by /etc/profile.d/export-gpio.sh 
-    */
-
-    gpioExport(redLED);
-    gpioExport(greenLED);
-    gpioExport(blueLED);
-    gpioExport(relayControl);
-
-    gpioSetDirection(redLED, outputPin); /* While object detected */
-    gpioSetValue(redLED, off);
-
-    gpioSetDirection(greenLED, outputPin); /* Flash during frames */
-    gpioSetValue(greenLED, on);
-
-    gpioSetDirection(blueLED, outputPin); /* Flash during file save */
-    gpioSetValue(blueLED, off);
-
-    gpioSetDirection(relayControl, outputPin); /* */
-    gpioSetValue(relayControl, off);
-
-    gpioExport(pushButton);
-    gpioExport(videoOutputScreenSwitch);
-    gpioExport(videoOutputFileSwitch);
-
-    gpioExport(baseSwitch);
-    gpioExport(videoOutputResultSwitch);
-
-    gpioSetDirection(pushButton, inputPin); /* Pause / Restart */
-    gpioSetDirection(videoOutputScreenSwitch, inputPin); /* Base A / B */
-    gpioSetDirection(videoOutputFileSwitch, inputPin); /* Video output on / off */
-
-    gpioSetDirection(baseSwitch, inputPin);
-    gpioSetDirection(videoOutputResultSwitch, inputPin);
-#if 0
-    gpioSetEdge(pushButton, "rising");
-    int gfd = gpioOpen(pushButton);
-    if(gfd) {
-        char v;
-        struct pollfd p;
-        p.fd = fd;
-        poll(&p, 1, -1); /* Discard first IRQ */
-        read(fd, &v, 1);
-        while(1) {
-            poll(&p, 1, -1);
-            if((p.revents & POLLPRI) == POLLPRI) {
-                lseek(fd, 0, SEEK_SET);
-                read(fd, &v, 1);
-                // printf("Interrup GPIO value : %c\n", v);
-            }
+    void OnPushButton() {
+        if(frameCount < 10) { /* Button debunce */
+            usleep(10000);
+            return;
         }
-        gpioCloae(gfd);
-    }
-#endif
-    const char *ttyName = "/dev/ttyTHS1";
+        bPause = !bPause;
+        frameCount = 0;
 
-    int ttyFd = open (ttyName, O_RDWR | O_NOCTTY | O_SYNC);
-    if (ttyFd) {
-        set_interface_attribs (ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
-        set_blocking (ttyFd, 0);                // set no blocking
-    } else
-        printf ("error %d opening %s: %s\n", errno, ttyName, strerror (errno));
+        if(bPause) {
+            cout << endl;
+            cout << "### Object tracking stoped !!!" << endl;
+            cout << endl;
+            if(bVideoOutputScreen || bVideoOutputFile) {
+                videoWriterQueue.cancel();
+                outThread.join();
+            }
+        } else {/* Restart, record new video */
+            UpdateDipSwitch();
 
-    if(signal(SIGINT, sig_handler) == SIG_ERR)
-        printf("\ncan't catch SIGINT\n");
+            cout << endl;
+            cout << "### Object tracking started !!!" << endl;
+            cout << endl;
 
-    Mat frame, capFrame;
-    cuda::GpuMat gpuFrame;
-
-    static char gstStr[512];
-
-/*
-wbmode              : White balance affects the color temperature of the photo
-                        flags: readable, writable
-                        Enum "GstNvArgusCamWBMode" Default: 1, "auto"
-                           (0): off              - GST_NVCAM_WB_MODE_OFF
-                           (1): auto             - GST_NVCAM_WB_MODE_AUTO
-                           (2): incandescent     - GST_NVCAM_WB_MODE_INCANDESCENT
-                           (3): fluorescent      - GST_NVCAM_WB_MODE_FLUORESCENT
-                           (4): warm-fluorescent - GST_NVCAM_WB_MODE_WARM_FLUORESCENT
-                           (5): daylight         - GST_NVCAM_WB_MODE_DAYLIGHT
-                           (6): cloudy-daylight  - GST_NVCAM_WB_MODE_CLOUDY_DAYLIGHT
-                           (7): twilight         - GST_NVCAM_WB_MODE_TWILIGHT
-                           (8): shade            - GST_NVCAM_WB_MODE_SHADE
-                           (9): manual           - GST_NVCAM_WB_MODE_MANUAL
-exposuretimerange   : Property to adjust exposure time range in nanoseconds
-            Use string with values of Exposure Time Range (low, high)
-            in that order, to set the property.
-            eg: exposuretimerange="34000 358733000"
-                        flags: readable, writable
-                        String. Default: null
-    # This sets exposure to 20 ms
-    exposuretimerange="20000000 20000000"
-tnr-mode            : property to select temporal noise reduction mode
-                        flags: readable, writable
-                        Enum "GstNvArgusCamTNRMode" Default: 1, "NoiseReduction_Fast"
-                           (0): NoiseReduction_Off - GST_NVCAM_NR_OFF
-                           (1): NoiseReduction_Fast - GST_NVCAM_NR_FAST
-                           (2): NoiseReduction_HighQuality - GST_NVCAM_NR_HIGHQUALITY
-ee-mode             : property to select edge enhnacement mode
-                        flags: readable, writable
-                        Enum "GstNvArgusCamEEMode" Default: 1, "EdgeEnhancement_Fast"
-                           (0): EdgeEnhancement_Off - GST_NVCAM_EE_OFF
-                           (1): EdgeEnhancement_Fast - GST_NVCAM_EE_FAST
-                           (2): EdgeEnhancement_HighQuality - GST_NVCAM_EE_HIGHQUALITY
-*/
-    int index = 0;    
-    if(argc > 1)
-        index = atoi(argv[1]);
-    /* export GST_DEBUG=2 to show debug message */
-/*
-    snprintf(gstStr, 512, "nvarguscamerasrc wbmode=5 tnr-mode=2 ee-mode=2 exposuretimerange=\"5000000 10000000\" ! \
-        video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
-        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-    VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
-*/
-    snprintf(gstStr, 512, "nvarguscamerasrc wbmode=5 tnr-mode=2 ee-mode=2 ! \
-        video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
-        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-/*
-    snprintf(gstStr, 512, "v4l2src device=/dev/video1 ! \
-        video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
-        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-*/
-    VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
-
-    cout << "Video input : " << gstStr << endl;
-
-    if(!cap.isOpened()) {
-        cout << "Could not open video" << endl;
-        return 1;
+            if(bVideoOutputScreen || bVideoOutputFile)
+                outThread = thread(&VideoWriterThread, m_videoWidth, m_videoHeight);
+        }
     }
 
-    thread outThread;
-
-    //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorKNN();
-    //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorMOG2();
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(60, 16, false); /* background history count, varThreshold, shadow detection */
-
-    bool doUpdateModel = true;
-    bool doSmoothMask = true;
-
-    Mat foregroundMask, background;
-//#ifdef VIDEO_OUTPUT_RESULT_FRAME
-    Mat outFrame;
-//#endif
-    cuda::GpuMat gpuForegroundMask;
-    Ptr<cuda::Filter> gaussianFilter;
-    Ptr<cuda::Filter> erodeFilter;
-    Ptr<cuda::Filter> erodeFilter2;
-
-    Tracker tracker;
-    Target *primaryTarget = 0;
-
-    int cx, cy;
-    while(1) {
-        if(cap.read(capFrame))
-            break;
-        if(bShutdown)
-            return 0;
+public:
+    RF_Base() : m_ttyFd(0), m_videoWidth(0), m_videoHeight(0), vPushButton(1) {
     }
-    cx = capFrame.cols - 1;
-    cy = (capFrame.rows / 2) - 1;
 
-    high_resolution_clock::time_point t1(high_resolution_clock::now());
+    void InitGPIO() {
+        /* 
+        * Do enable GPIO by /etc/profile.d/export-gpio.sh 
+        */
 
-    unsigned int gv;
-    gpioGetValue(baseSwitch, &gv);
+        /* Output */
+        gpioExport(redLED);
+        gpioExport(greenLED);
+        gpioExport(blueLED);
+        gpioExport(relayControl);
 
-    if(gv == 0) 
-        baseType = BASE_A;
-    else
-        baseType = BASE_B;
+        gpioSetDirection(redLED, outputPin); /* While object detected */
+        gpioSetValue(redLED, off);
 
-    cout << endl;
-    printf("### BASE %c\n", gv ? 'B' : 'A');
+        gpioSetDirection(greenLED, outputPin); /* Flash during frames */
+        gpioSetValue(greenLED, on);
 
-    gpioGetValue(videoOutputScreenSwitch, &gv);
-    if(gv == 0) /* pull low */
-        bVideoOutputScreen = true;
-    else                    
-        bVideoOutputScreen = false;
+        gpioSetDirection(blueLED, outputPin); /* Flash during file save */
+        gpioSetValue(blueLED, off);
 
-    printf("### Video output screen : %s\n", bVideoOutputScreen ? "Enable" : "Disable");
+        gpioSetDirection(relayControl, outputPin); /* */
+        gpioSetValue(relayControl, off);
 
-    gpioGetValue(videoOutputFileSwitch, &gv);
-    if(gv == 0)
-        bVideoOutputFile = true;
-    else
-        bVideoOutputFile = false;
+        /* Input */
+        gpioExport(videoOutputScreenSwitch);
+        gpioExport(videoOutputFileSwitch);
 
-    printf("### Video output file : %s\n", bVideoOutputFile ? "Enable" : "Disable");
+        gpioExport(baseSwitch);
+        gpioExport(videoOutputResultSwitch);
+        gpioExport(pushButton);
 
-    gpioGetValue(videoOutputResultSwitch, &gv);
-    if(gv == 0)
-        bVideoOutputResult = true;
-    else
-        bVideoOutputResult = false;                
+        gpioSetDirection(videoOutputScreenSwitch, inputPin); /* Base A / B */
+        gpioSetDirection(videoOutputFileSwitch, inputPin); /* Video output on / off */
 
-    printf("### Video output result : %s\n", bVideoOutputResult ? "Enable" : "Disable");
+        gpioSetDirection(baseSwitch, inputPin);
+        gpioSetDirection(videoOutputResultSwitch, inputPin);
+        gpioSetDirection(pushButton, inputPin); /* Pause / Restart */
 
-    cout << endl;
-    cout << "### Press button to start object tracking !!!" << endl;
-    cout << endl;
+    #if 0
+        gpioSetEdge(pushButton, "rising");
+        int gfd = gpioOpen(pushButton);
+        if(gfd) {
+            char v;
+            struct pollfd p;
+            p.fd = fd;
+            poll(&p, 1, -1); /* Discard first IRQ */
+            read(fd, &v, 1);
+            while(1) {
+                poll(&p, 1, -1);
+                if((p.revents & POLLPRI) == POLLPRI) {
+                    lseek(fd, 0, SEEK_SET);
+                    read(fd, &v, 1);
+                    // printf("Interrup GPIO value : %c\n", v);
+                }
+            }
+            gpioCloae(gfd);
+        }
+    #endif
+    }
 
-    uint64_t frameCount = 0;
-    unsigned int vPushButton = 1; /* Initial high */
+    int Open() {
+        const char *ttyName = "/dev/ttyTHS1";
 
-    while(cap.read(capFrame)) {
-        gpioGetValue(pushButton, &gv);
+        m_ttyFd = open (ttyName, O_RDWR | O_NOCTTY | O_SYNC);
+        if (m_ttyFd)
+            set_interface_attribs (m_ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
+        else
+            printf ("error %d opening %s: %s\n", errno, ttyName, strerror (errno));
 
+        return m_ttyFd;
+    }
+
+    void Close() {
+        if(m_ttyFd)
+            close(m_ttyFd);
+    }
+
+    void Toggle(bool newTrigger) {
+        static uint8_t serNo = 0x3f;
+        uint8_t data[1];
+
+        if(!m_ttyFd)
+            return;
+
+        if(newTrigger) { /* It's NEW trigger */
+            if(++serNo > 0x3f)
+                serNo = 0;
+        }
+
+        if(baseType == BASE_A) {
+            data[0] = (serNo & 0x3f);
+            printf("BASE_A[%d]\r\n", serNo);
+            write(m_ttyFd, data, 1);
+        } else if(baseType == BASE_B) {
+            data[0] = (serNo & 0x3f) | 0x40;
+            printf("BASE_B[%d]\r\n", serNo);
+            write(m_ttyFd, data, 1);
+        }        
+    }
+
+    void UpdateDipSwitch() {
+        unsigned int gv;
+        gpioGetValue(baseSwitch, &gv);
+
+        if(gv == 0) 
+            baseType = BASE_A;
+        else
+            baseType = BASE_B;
+
+        cout << endl;
+        printf("### BASE %c\n", gv ? 'B' : 'A');
+
+        gpioGetValue(videoOutputScreenSwitch, &gv);
+        if(gv == 0) /* pull low */
+            bVideoOutputScreen = true;
+        else                    
+            bVideoOutputScreen = false;
+
+        printf("### Video output screen : %s\n", bVideoOutputScreen ? "Enable" : "Disable");
+
+        gpioGetValue(videoOutputFileSwitch, &gv);
+        if(gv == 0)
+            bVideoOutputFile = true;
+        else
+            bVideoOutputFile = false;
+
+        printf("### Video output file : %s\n", bVideoOutputFile ? "Enable" : "Disable");
+
+        gpioGetValue(videoOutputResultSwitch, &gv);
+        if(gv == 0)
+            bVideoOutputResult = true;
+        else
+            bVideoOutputResult = false;                
+
+        printf("### Video output result : %s\n", bVideoOutputResult ? "Enable" : "Disable");
+    } 
+
+    void Handler() {        
         frameCount++;
 
-        if(gv == 1 && vPushButton == 0) { /* Raising edge */
-            if(frameCount < 30) { /* Button debunce */
-                usleep(10000);
-                continue;
-            }
-            bPause = !bPause;
-            frameCount = 0;
-        }
+        unsigned int gv;
+        gpioGetValue(pushButton, &gv);
+        if(gv == 0 && vPushButton == 1) /* Raising edge */
+            OnPushButton();
         vPushButton = gv;
-#if 0
+
+        //printf("gv = %d, vPushButton = %d\n", gv, vPushButton);
+
+        /**/
+
         fd_set rfds;
         FD_ZERO(&rfds);
-        FD_SET(ttyFd, &rfds);
+        FD_SET(m_ttyFd, &rfds);
 
         struct timeval tv;
         tv.tv_sec = 0;
         tv.tv_usec = 0;
 
-        if(select(ttyFd+1, &rfds, NULL, NULL, &tv) > 0) {
+        if(select(m_ttyFd+1, &rfds, NULL, NULL, &tv) > 0) {
             uint8_t data[1];
-            int r = read(ttyFd, data, 1); /* Receive trigger from f3f timer */
+            int r = read(m_ttyFd, data, 1); /* Receive trigger from f3f timer */
             if(r == 1) {
                 if(baseType == BASE_A) {
                     if((data[0] & 0xc0) == 0x80) {
@@ -749,91 +729,149 @@ ee-mode             : property to select edge enhnacement mode
                 }
             }
         }
-#endif
-        if(frameCount == 0) { /* suspend or resume */
-            if(bPause) {
-                cout << endl;
-                cout << "### Object tracking stoped !!!" << endl;
-                cout << endl;
-                if(bVideoOutputScreen || bVideoOutputFile) {
-                    videoWriterQueue.cancel();
-                    outThread.join();
-                }
-            } else {/* Restart, record new video */
-                gpioGetValue(baseSwitch, &gv);
+    }
+
+    void RedLed(pinValues onOff) {
+        gpioSetValue(redLED, onOff);
+    }
+
+    void GreenLed(pinValues onOff) {
+        gpioSetValue(greenLED, onOff);
+    }
+
+    void BlueLed(pinValues onOff) {
+        gpioSetValue(blueLED, onOff);
+    }
+
+    void Relay(pinValues onOff) {
+        gpioSetValue(relayControl, onOff);
+    }
+
+    void UpdateVideoSize(int width, int height) {
+        m_videoWidth = width;
+        m_videoHeight = height;
+    }
+
+};
+
+static RF_Base rfBase; 
+
+int main(int argc, char**argv)
+{
+    cuda::printShortCudaDeviceInfo(cuda::getDevice());
+    std::cout << cv::getBuildInformation() << std::endl;
+
+    rfBase.InitGPIO();
+    rfBase.Open();
+    rfBase.UpdateDipSwitch();
+
+    if(signal(SIGINT, sig_handler) == SIG_ERR)
+        printf("\ncan't catch SIGINT\n");
+
+    static char gstStr[512];
+
+/* Reference : nvarguscamerasrc.txt */
+
+/* export GST_DEBUG=2 to show debug message */
+    snprintf(gstStr, 512, "nvarguscamerasrc wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=2 ! \
+        video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 /*
-                if(gv == 0) 
-                    baseType = BASE_A;
-                else
-                    baseType = BASE_B;
-
-                cout << endl;
-                printf("### BASE %c\n", gv ? 'B' : 'A');
+    snprintf(gstStr, 512, "v4l2src device=/dev/video1 ! \
+        video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 */
-                gpioGetValue(videoOutputScreenSwitch, &gv);
-                if(gv == 0) /* pull low */
-                    bVideoOutputScreen = true;
-                else                    
-                    bVideoOutputScreen = false;
+    VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
 
-                printf("### Video output screen : %s\n", bVideoOutputScreen ? "Enable" : "Disable");
+    cout << "Video input : " << gstStr << endl;
 
-                gpioGetValue(videoOutputFileSwitch, &gv);
-                if(gv == 0)
-                    bVideoOutputFile = true;
-                else
-                    bVideoOutputFile = false;
+    if(!cap.isOpened()) {
+        cout << "Could not open video" << endl;
+        return 1;
+    }
 
-                printf("### Video output file : %s\n", bVideoOutputFile ? "Enable" : "Disable");
+    //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorKNN();
+    //Ptr<BackgroundSubtractor> bsModel = createBackgroundSubtractorMOG2();
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
 
-                gpioGetValue(videoOutputResultSwitch, &gv);
-                if(gv == 0)
-                    bVideoOutputResult = true;
-                else
-                    bVideoOutputResult = false;                
+    bool doUpdateModel = true;
+    bool doSmoothMask = true;
 
-                printf("### Video output result : %s\n", bVideoOutputResult ? "Enable" : "Disable");
+    Mat foregroundMask, background;
+    Mat outFrame;
 
-                cout << endl;
-                cout << "### Object tracking started !!!" << endl;
-                cout << endl;
-                if(bVideoOutputScreen || bVideoOutputFile)
-                    outThread = thread(&VideoWriterThread, capFrame.cols, capFrame.rows);
-            }
-        }
+    cuda::GpuMat gpuForegroundMask;
+    Ptr<cuda::Filter> gaussianFilter;
+    Ptr<cuda::Filter> erodeFilter;
+    Ptr<cuda::Filter> erodeFilter2;
+
+    Tracker tracker;
+    Target *primaryTarget = 0;
+
+    Mat frame, capFrame;
+    cuda::GpuMat gpuFrame;
+
+    while(1) {
+        if(cap.read(capFrame))
+            break;
+        else
+            usleep(10000);
+        if(bShutdown)
+            return 0;
+    }
+
+    int cx = capFrame.cols - 1;
+    int cy = (capFrame.rows / 2) - 1;
+
+    rfBase.UpdateVideoSize(capFrame.cols, capFrame.rows);
+
+    cout << endl;
+    cout << "### Press button to start object tracking !!!" << endl;
+    cout << endl;
+
+    double fps = 0;
+
+    high_resolution_clock::time_point t1(high_resolution_clock::now());
+
+    while(cap.read(capFrame)) {
+        unsigned int gv;
+
+        if(bShutdown)
+            break;
+
+        rfBase.Handler();
 
         if(bPause) {
-            if(bShutdown)
-                break;
-            gpioSetValue(redLED, off); /* While object detected */
-            gpioSetValue(relayControl, off);
-            gpioSetValue(greenLED, on); /* Flash during frames */
+            rfBase.RedLed(off);
+            rfBase.Relay(off);
+            rfBase.GreenLed(on);
             if(bVideoOutputFile)
-                gpioSetValue(blueLED, on);
+                rfBase.BlueLed(on);
+
             usleep(10000); /* Wait 10ms */
             continue;
         }
 
         if(frameCount % 2 == 0) {
-            gpioSetValue(greenLED, on); /* Flash during frames */
+            rfBase.GreenLed(on); /* Flash during frames */
             if(bVideoOutputFile)
-                gpioSetValue(blueLED, on);
+                rfBase.BlueLed(on);
         } else {
-            gpioSetValue(greenLED, off); /* Flash during frames */
+            rfBase.GreenLed(off); /* Flash during frames */
             if(bVideoOutputFile)
-                gpioSetValue(blueLED, off);
+                rfBase.BlueLed(off);
         }
 
-//        if(bVideoOutputFile == false) {
         cvtColor(capFrame, frame, COLOR_BGR2GRAY);
-//#ifdef VIDEO_OUTPUT_RESULT_FRAME
         if(bVideoOutputResult) {
             if(bVideoOutputScreen || bVideoOutputFile) {
                 capFrame.copyTo(outFrame);
                 line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
             }
         }
-//#endif //VIDEO_OUTPUT_RESULT_FRAME
+
         int erosion_size = 6;   
         Mat element = cv::getStructuringElement(cv::MORPH_RECT,
                           cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
@@ -879,7 +917,8 @@ ee-mode             : property to select edge enhnacement mode
 
 		vector< vector<Point> > contours;
     	vector< Vec4i > hierarchy;
-    	findContours(foregroundMask, contours, hierarchy, RETR_TREE, CHAIN_APPROX_NONE);
+//    	findContours(foregroundMask, contours, hierarchy, RETR_TREE, CHAIN_APPROX_NONE);
+        findContours(foregroundMask, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
         sort(contours.begin(), contours.end(), ContoursSort); /* Contours sort by area, controus[0] is largest */
 
         vector<Rect> boundRect( contours.size() );
@@ -897,27 +936,24 @@ ee-mode             : property to select edge enhnacement mode
                 boundRect[i].height <= MAX_TARGET_HEIGHT) {
 
                     roiRect.push_back(boundRect[i]);
-//#ifdef VIDEO_OUTPUT_RESULT_FRAME
                     if(bVideoOutputResult) {
                         if(bVideoOutputScreen || bVideoOutputFile) {
                             Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
                             rectangle( outFrame, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0 );
                         }
                     }
-//#endif
     		}
             if(roiRect.size() >= MAX_NUM_TARGET) /* Deal top 5 only */
                 break;
     	}
 
-        tracker.Update(frame, roiRect);
+        tracker.Update(roiRect);
 
-        gpioSetValue(redLED, off);
-        gpioSetValue(relayControl, off);
+        rfBase.RedLed(off);
+        rfBase.Relay(off);
 
         primaryTarget = tracker.PrimaryTarget();
         if(primaryTarget) {
-//#ifdef VIDEO_OUTPUT_RESULT_FRAME
             if(bVideoOutputResult) {
                 if(bVideoOutputScreen || bVideoOutputFile) {
                     Rect r = primaryTarget->m_rects.back();
@@ -929,36 +965,31 @@ ee-mode             : property to select edge enhnacement mode
                     }
                 }
             }
-//#endif
-            if(primaryTarget->ArcLength() > 120) {
+            if(primaryTarget->CourseLength() > MIN_COURSE_LENGTH && 
+                    primaryTarget->TrackedCount() > MIN_TARGET_TRACKED_COUNT) {
                 if((primaryTarget->m_points[0].y > cy && primaryTarget->LatestPoint().y <= cy) ||
                     (primaryTarget->m_points[0].y < cy && primaryTarget->LatestPoint().y >= cy)) {
-//#ifdef VIDEO_OUTPUT_RESULT_FRAME
-                    if(bVideoOutputResult) {
-                        if(bVideoOutputScreen || bVideoOutputFile)
-                            line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
-                    }
-//#endif
+
                     if(primaryTarget->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
-                        if(primaryTarget->TriggerCount() >= MIN_NUM_TRIGGER) { /* Ignore first trigger to filter out fake detection */
-                            base_trigger(ttyFd, primaryTarget->TriggerCount() == MIN_NUM_TRIGGER ? true : false); 
-                            gpioSetValue(redLED, on);
-                            gpioSetValue(relayControl, on);
+                        if(bVideoOutputResult) {
+                            if(bVideoOutputScreen || bVideoOutputFile)
+                                line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
                         }
+                        rfBase.Toggle(primaryTarget->TriggerCount() == 0);
+                        rfBase.RedLed(on);
+                        rfBase.Relay(on);
+
                         primaryTarget->Trigger();
-                    } else
-                        primaryTarget->Reset();
+                    }
                 }
             }
         }
-//        } /* bVideoOutputFile */
 /*
         bsModel->getBackgroundImage(background);
         if (!background.empty())
             imshow("mean background image", background );
 */
         if(bVideoOutputScreen || bVideoOutputFile) {
-//#ifdef VIDEO_OUTPUT_RESULT_FRAME
             if(bVideoOutputResult) {
                 char str[32];
                 snprintf(str, 32, "FPS : %.2lf", fps);
@@ -969,14 +1000,9 @@ ee-mode             : property to select edge enhnacement mode
                 putText(outFrame, string(str), textOrg, fontFace, fontScale, Scalar(0, 255, 0), thicknessScale, cv::LINE_8);
                 videoWriterQueue.push(outFrame.clone());
             } else {
-//#else
                 videoWriterQueue.push(capFrame.clone());
             }
-//#endif
         }
-
-        if(bShutdown)
-            break;
 
         high_resolution_clock::time_point t2(high_resolution_clock::now());
         double dt_us(static_cast<double>(duration_cast<microseconds>(t2 - t1).count()));
@@ -987,10 +1013,10 @@ ee-mode             : property to select edge enhnacement mode
         t1 = high_resolution_clock::now();
     }
 
-    gpioSetValue(greenLED, off); /* Flash during frames */
-    gpioSetValue(blueLED, off); /* Flash during file save */
-    gpioSetValue(redLED, off); /* While object detected */
-    gpioSetValue(relayControl, off);
+    rfBase.GreenLed(off); /* Flash during frames */
+    rfBase.BlueLed(off); /* Flash during file save */
+    rfBase.RedLed(off); /* While object detected */
+    rfBase.Relay(off);
 
     if(bVideoOutputScreen || bVideoOutputFile) {
         if(bPause == false) {
@@ -999,8 +1025,7 @@ ee-mode             : property to select edge enhnacement mode
         }
     }
 
-    if(ttyFd)
-        close(ttyFd);
+    rfBase.Close();
 
     std::cout << "Finished ..." << endl;
 
