@@ -34,6 +34,9 @@ using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
 
+using std::chrono::steady_clock;
+using std::chrono::seconds;
+
 //#define CAMERA_1080P
 
 #ifdef CAMERA_1080P
@@ -62,7 +65,8 @@ using std::chrono::microseconds;
 #define MIN_TARGET_TRACKED_COUNT 3      /* Minimum target tracked count of RF trigger after detection of cross line */
 
 #define VIDEO_OUTPUT_DIR "/home/gigijoe/Videos"
-#define VIDEO_OUTPUT_FILE_NAME "sB"
+#define VIDEO_OUTPUT_FILE_NAME "base"
+#define VIDEO_FILE_OUTPUT_DURATION 90   /* Video file duration 90 secends */
 
 typedef enum { BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType;
 
@@ -464,6 +468,8 @@ void VideoWriterThread(int width, int height)
 
     videoWriterQueue.reset();
 
+    steady_clock::time_point t1 = std::chrono::steady_clock::now();
+
     try {
         while(1) {
             Mat frame = videoWriterQueue.pop();
@@ -471,6 +477,11 @@ void VideoWriterThread(int width, int height)
                 outFile.write(frame);
             if(bVideoOutputScreen)
                 outScreen.write(frame);
+            steady_clock::time_point t2 = std::chrono::steady_clock::now();
+            double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
+
+            if(bVideoOutputFile && secs >= VIDEO_FILE_OUTPUT_DURATION)
+                videoWriterQueue.cancel();
         }
     } catch (FrameQueue::cancelled & /*e*/) {
         // Nothing more to process, we're done
