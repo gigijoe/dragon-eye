@@ -16,6 +16,8 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <arpa/inet.h>
+
 using namespace cv;
 using namespace std;
 
@@ -26,6 +28,11 @@ using namespace std;
 #include <queue>
 #include <thread>
 
+#include <iostream>
+#include <fstream>
+#include <algorithm>
+#include <regex>
+
 extern "C" {
 #include "jetsonGPIO/jetsonGPIO.h"
 }
@@ -34,7 +41,7 @@ using std::chrono::high_resolution_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
 
-using std::chrono::steady_clock;
+using std::chrono::system_clock;
 using std::chrono::seconds;
 
 //#define CAMERA_1080P
@@ -68,7 +75,10 @@ using std::chrono::seconds;
 #define VIDEO_OUTPUT_FILE_NAME       "base"
 #define VIDEO_FILE_OUTPUT_DURATION   90     /* Video file duration 90 secends */
 
-typedef enum { BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType_t;
+#define STR_SIZE                  1024
+#define CONFIG_FILE_DIR              "/etc/dragon-eye"
+
+typedef enum { BASE_UNKNOWN, BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType_t;
 
 static bool bShutdown = false;
 static bool bPause = true;
@@ -343,12 +353,19 @@ void FrameQueue::reset()
 *
 */
 
+static bool validateIpAddress(const string &ipAddress)
+{
+    struct sockaddr_in sa;
+    int result = inet_pton(AF_INET, ipAddress.c_str(), &(sa.sin_addr));
+    return result != 0;
+}
+
 static FrameQueue videoWriterQueue;
 
-void VideoWriterThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, int width, int height)
+void VideoWriterThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, bool isVideoOutputRTP, int width, int height)
 {    
     Size videoSize = Size((int)width,(int)height);
-    char gstStr[768];
+    char gstStr[STR_SIZE];
 
     VideoWriter outFile;
     VideoWriter outScreen;
@@ -369,12 +386,12 @@ void VideoWriterThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVid
     if(isVideoOutputFile) {
     /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
 #if 1
-        snprintf(gstStr, 768, "appsrc ! video/x-raw, format=(string)BGR ! \
+        snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
                    nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
             30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #else /* NOT work, due to tee */
-        snprintf(gstStr, 768, "appsrc ! video/x-raw, format=(string)BGR ! \
+        snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh265enc low-latency=1 control-rate=2 bitrate=4000000 ! \
 tee name=t \
@@ -384,32 +401,43 @@ udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
             30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #endif
         outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
+        cout << endl;
         cout << gstStr << endl;
+        cout << endl;
         cout << "*** Start record video ***" << endl;
     }
 
     if(isVideoOutputScreen) {
-        snprintf(gstStr, 768, "appsrc ! video/x-raw, format=(string)BGR ! \
+        snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv ! video/x-raw(memory:NVMM) ! \
 nvoverlaysink sync=false -e ", 30);
         outScreen.open(gstStr, VideoWriter::fourcc('I', '4', '2', '0'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
+        cout << endl;
         cout << gstStr << endl;
+        cout << endl;
         cout << "*** Start display video ***" << endl;
+    }
 
+    if(isVideoOutputRTP) {
 #undef MULTICAST_RTP
 #ifdef MULTICAST_RTP /* Multicast RTP does NOT work with wifi due to low speed ... */
-        snprintf(gstStr, 768, "appsrc ! video/x-raw, format=(string)BGR ! \
+        snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh265enc low-latency=1 control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
 h265parse ! rtph265pay mtu=1400 ! udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
             30);
 #else
-        ifstream input("/home/gigijoe/dragon-eye.udpsink.host");
+        snprintf(gstStr, STR_SIZE, "%s/udpsink.host", CONFIG_FILE_DIR);
+        ifstream input(gstStr);
         string ip("10.0.0.1");
         if(input.is_open()) {
             for(string line; getline( input, line ); ) {
-                if(line.size() >= 7) { /* Minimum IP address length */
+                line.erase(remove_if(line.begin(), line.end(), ::isspace), line.end());
+                //line = std::regex_replace(line, std::regex("^ +| +$|( ) +"), "$1");
+                if(line[0] == '#')
+                    continue;
+                if(validateIpAddress(line)) { /* Minimum IP address length */
                     ip = line;
                     break;
                 }
@@ -417,31 +445,34 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=224.1.1.1 port=5000 auto-multicas
             input.close();
         }
 
-        snprintf(gstStr, 768, "appsrc ! video/x-raw, format=(string)BGR ! \
+        snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh265enc low-latency=1 control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
 h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=false ",
             30, ip.c_str());
 #endif
         outRTP.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
+        cout << endl;
         cout << gstStr << endl;
+        cout << endl;
         cout << "*** Start RTP video ***" << endl;        
     }
 
     videoWriterQueue.reset();
 
-    steady_clock::time_point t1 = std::chrono::steady_clock::now();
+    system_clock::time_point t1 = system_clock::now();
 
     try {
         while(1) {
             Mat frame = videoWriterQueue.pop();
             if(isVideoOutputFile)
                 outFile.write(frame);
-            if(isVideoOutputScreen) {
+            if(isVideoOutputScreen)
                 outScreen.write(frame);
+            if(isVideoOutputRTP)
                 outRTP.write(frame);
-            }
-            steady_clock::time_point t2 = std::chrono::steady_clock::now();
+            
+            system_clock::time_point t2 = system_clock::now();
             double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
 
             if(isVideoOutputFile && secs >= VIDEO_FILE_OUTPUT_DURATION)
@@ -450,14 +481,21 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=fal
     } catch (FrameQueue::cancelled & /*e*/) {
         // Nothing more to process, we're done
         if(isVideoOutputFile) {
-            cout << "*** Stop display video ***" << endl;
+            cout << endl;
+            cout << "*** Stop record video ***" << endl;
             outFile.release();
         }
         if(isVideoOutputScreen) {
-            cout << "*** Stop record video ***" << endl;
+            cout << endl;
+            cout << "*** Stop display video ***" << endl;
             outScreen.release();
+        }
+        if(isVideoOutputRTP) {
+            cout << endl;
+            cout << "*** Stop RTP video ***" << endl;
             outRTP.release();
         }
+
     }    
 }
 
@@ -465,7 +503,35 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=fal
 *
 */
 
-class RF_Base {
+static size_t ParseConfigFile(char *file, map<string, string> & cfg)
+{
+    ifstream input(file);
+    if(input.is_open()) {
+        for(string line; getline( input, line ); ) {
+            //line.erase(remove_if(line.begin(), line.end(), ::isspace), line.end());
+            line = std::regex_replace(line, std::regex("^ +| +$|( ) +"), "$1"); /* Strip leading & tail space */
+            if(line[0] == '#' || line.empty())
+                    continue;
+            
+            auto delimiterPos = line.find("=");
+            auto name = line.substr(0, delimiterPos);
+            auto value = line.substr(delimiterPos + 1);
+
+            name = std::regex_replace(name, std::regex(" +$"), ""); /* Remove tail space */
+            value = std::regex_replace(value, std::regex("^ +"), ""); /* Remove leading space */
+
+            cfg.insert(pair<string, string>(name, value));
+        }
+        input.close();
+    }
+    return cfg.size();
+}
+
+/*
+*
+*/
+
+class F3xBase {
 private:
     int m_ttyFd;
     BaseType_t m_baseType;
@@ -474,8 +540,10 @@ private:
     jetsonNanoGPIONumber m_videoOutputScreenSwitch, m_videoOutputFileSwitch;
     jetsonNanoGPIONumber m_baseSwitch, m_videoOutputResultSwitch, m_pushButton;
 
+    bool m_isVideoOutputHwSwitch;
     bool m_isVideoOutputScreen;
     bool m_isVideoOutputFile;
+    bool m_isVideoOutputRTP;
     bool m_isVideoOutputResult;
 
     int SetupTTY(int fd, int speed, int parity) {
@@ -518,11 +586,15 @@ private:
     }
 
 public:
-    RF_Base() : m_ttyFd(0), m_baseType(BASE_A),
+    F3xBase() : m_ttyFd(0), m_baseType(BASE_A),
         m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51),
         m_videoOutputScreenSwitch(gpio19), m_videoOutputFileSwitch(gpio20),
         m_baseSwitch(gpio12), m_videoOutputResultSwitch(gpio13), m_pushButton(gpio18),
-        m_isVideoOutputScreen(false), m_isVideoOutputFile(false), m_isVideoOutputResult(false) {
+        m_isVideoOutputHwSwitch(false), 
+        m_isVideoOutputScreen(false), 
+        m_isVideoOutputFile(false), 
+        m_isVideoOutputRTP(false), 
+        m_isVideoOutputResult(false) {
     }
 
     void SetupGPIO() {
@@ -536,7 +608,7 @@ public:
         gpioExport(m_blueLED);
         gpioExport(m_relay);
 
-        gpioSetDirection(m_redLED, outputPin); /* While object detected */
+        gpioSetDirection(m_redLED, outputPin); /* Flash during object detected */
         gpioSetValue(m_redLED, off);
 
         gpioSetDirection(m_greenLED, outputPin); /* Flash during frames */
@@ -625,7 +697,10 @@ public:
         }        
     }
 
-    void UpdateDipSwitch() {
+    void UpdateHwSwitch() {
+        cout << endl;
+        cout << "### System config HW switch" << endl; 
+
         unsigned int gv;
         gpioGetValue(m_baseSwitch, &gv);
 
@@ -634,8 +709,7 @@ public:
         else
             m_baseType = BASE_B;
 
-        cout << endl;
-        printf("### BASE %c\n", gv ? 'B' : 'A');
+        printf("\n### BASE %c\n", gv ? 'B' : 'A');
 
         gpioGetValue(m_videoOutputScreenSwitch, &gv);
         if(gv == 0) /* pull low */
@@ -662,8 +736,61 @@ public:
         printf("### Video output result : %s\n", m_isVideoOutputResult ? "Enable" : "Disable");
     } 
 
+    void UpdateSystemConfig() {
+        char fn[STR_SIZE];
+
+        snprintf(fn, STR_SIZE, "%s/dragon-eye.config", CONFIG_FILE_DIR);
+        map<string, string> cfg;
+        ParseConfigFile(fn, cfg);
+
+        cout << endl;
+        cout << "### System config" << endl; 
+        map<string, string>::iterator it;
+        for (it=cfg.begin(); it!=cfg.end(); it++) {
+            cout << it->first << " = " << it->second << endl;
+            
+            if(it->first == "base.type") {
+                if(it->second == "A")
+                    m_baseType = BASE_A;
+                else if(it->second == "B")
+                    m_baseType = BASE_B;
+                else
+                    m_baseType = BASE_UNKNOWN;
+            } else if(it->first == "video.output.hwswitch") {
+                if(it->second == "yes" || it->second == "1")
+                    m_isVideoOutputHwSwitch = true;
+                else
+                    m_isVideoOutputHwSwitch = false;
+            } else if(it->first == "video.output.screen") {
+                if(it->second == "yes" || it->second == "1")
+                    m_isVideoOutputScreen = true;
+                else
+                    m_isVideoOutputScreen = false;
+            } else if(it->first == "video.output.file") {
+                if(it->second == "yes" || it->second == "1")
+                    m_isVideoOutputFile = true;
+                else
+                    m_isVideoOutputFile = false;
+            } else if(it->first == "video.output.rtp") {
+                if(it->second == "yes" || it->second == "1")
+                    m_isVideoOutputRTP = true;
+                else
+                    m_isVideoOutputRTP = false;
+            } else if(it->first == "video.output.result") {
+                if(it->second == "yes" || it->second == "1")
+                    m_isVideoOutputResult = true;
+                else
+                    m_isVideoOutputResult = false;
+            }
+        }
+    }
+
     inline BaseType_t BaseType() const {
         return m_baseType;
+    }
+
+    inline bool IsVideoOutputHwSwitch() {
+        return m_isVideoOutputHwSwitch;        
     }
 
     inline bool IsVideoOutputScreen() const {
@@ -672,6 +799,14 @@ public:
 
     inline bool IsVideoOutputFile() const {
         return m_isVideoOutputFile;
+    }
+
+    inline bool IsVideoOutputRTP() const {
+        return m_isVideoOutputRTP;
+    }
+
+    inline bool IsVideoOutput() const {
+        return (m_isVideoOutputScreen || m_isVideoOutputFile || m_isVideoOutputRTP);
     }
 
     inline bool IsVideoOutputResult() const {
@@ -720,7 +855,7 @@ public:
     }
 };
 
-static RF_Base rfBase; 
+static F3xBase f3xBase; 
 
 /*
 *
@@ -728,26 +863,27 @@ static RF_Base rfBase;
 
 static thread outThread;
 
-static void OnPushButton(RF_Base & r, int videoWidth, int videoHeight) {
+static void OnPushButton(F3xBase & r, int videoWidth, int videoHeight) {
     bPause = !bPause;
 
     if(bPause) {
         cout << endl;
         cout << "*** Object tracking stoped ***" << endl;
-        cout << endl;
-        if(r.IsVideoOutputScreen() || r.IsVideoOutputFile()) {
+
+        if(r.IsVideoOutput()) {
             videoWriterQueue.cancel();
             outThread.join();
         }
     } else {/* Restart, record new video */
-        r.UpdateDipSwitch();
+        r.UpdateSystemConfig();
+        if(r.IsVideoOutputHwSwitch()) /* Overwrite config by HW switch */
+            r.UpdateHwSwitch();
 
         cout << endl;
         cout << "*** Object tracking started ***" << endl;
-        cout << endl;
 
-        if(r.IsVideoOutputScreen() || r.IsVideoOutputFile())
-            outThread = thread(&VideoWriterThread, r.BaseType(), r.IsVideoOutputScreen(), r.IsVideoOutputFile(), videoWidth, videoHeight);
+        if(r.IsVideoOutput())
+            outThread = thread(&VideoWriterThread, r.BaseType(), r.IsVideoOutputScreen(), r.IsVideoOutputFile(), r.IsVideoOutputRTP(), videoWidth, videoHeight);
     }
 }
 
@@ -760,34 +896,87 @@ int main(int argc, char**argv)
     cuda::printShortCudaDeviceInfo(cuda::getDevice());
     std::cout << cv::getBuildInformation() << std::endl;
 
-    rfBase.SetupGPIO();
-    rfBase.Open();
-    rfBase.UpdateDipSwitch();
+    f3xBase.SetupGPIO();
+    f3xBase.Open();
+    f3xBase.UpdateSystemConfig();
+    if(f3xBase.IsVideoOutputHwSwitch()) /* Overwrite config by HW switch */
+        f3xBase.UpdateHwSwitch();
 
     if(signal(SIGINT, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGINT\n");
 
-    static char gstStr[512];
+    char gstStr[STR_SIZE];
+
+    snprintf(gstStr, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
+    map<string, string> cfg;
+    ParseConfigFile(gstStr, cfg);
+
+    int wbmode = 0;
+    int tnr_mode = 1;
+    int tnr_strength = -1;
+    int ee_mode = 1;
+    int ee_strength = -1;
+    string gainrange; /* Default null */
+    string ispdigitalgainrange; /* Default null */
+    string exposuretimerange; /* Default null */
+    int exposurecompensation = 0;
+
+    cout << endl;
+    cout << "### Camera config" << endl; 
+    map<string, string>::iterator it;
+    for (it=cfg.begin(); it!=cfg.end(); it++) {
+        cout << it->first << " = " << it->second << endl;
+        if(it->first == "wbmode")
+            wbmode = stoi(it->second);
+        else if(it->first == "tnr-mode")
+            tnr_mode = stoi(it->second);
+        else if(it->first == "tnr-strength")
+            tnr_strength = stoi(it->second);
+        else if(it->first == "ee-mode")
+            ee_mode = stoi(it->second);
+        else if(it->first == "ee-strength")
+            ee_strength = stoi(it->second);
+        else if(it->first == "gainrange")
+            gainrange = it->second;
+        else if(it->first == "ispdigitalgainrange")
+            ispdigitalgainrange = it->second;
+        else if(it->first == "exposuretimerange")
+            exposuretimerange = it->second;
+        else if(it->first == "exposurecompensation")
+            exposurecompensation = stoi(it->second);
+    }
+    cout << endl;
 
 /* Reference : nvarguscamerasrc.txt */
 
 /* export GST_DEBUG=2 to show debug message */
-    snprintf(gstStr, 512, "nvarguscamerasrc wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=2 ! \
+#if 0
+    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=0 ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
         CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+#else
+    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
+video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+        wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
+        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+#endif
 /*
-    snprintf(gstStr, 512, "v4l2src device=/dev/video1 ! \
+    snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video1 ! \
         video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
         nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
         CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 */
     VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
 
+    cout << endl;
     cout << gstStr << endl;
+    cout << endl;
 
     if(!cap.isOpened()) {
-        cout << "Could not open video" << endl;
+        cout << endl;
+        cout << "!!! Could not open video" << endl;
         return 1;
     }
 
@@ -824,89 +1013,90 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 
     cout << endl;
     cout << "### Press button to start object tracking !!!" << endl;
-    cout << endl;
 
     double fps = 0;
 
     high_resolution_clock::time_point t1(high_resolution_clock::now());
 
-    uint64_t frameCount = 0;
+    uint64_t loopCount = 0;
 
-    while(cap.read(capFrame)) {
+    while(1) {
         if(bShutdown)
             break;
 
-        frameCount++; /* Increase frame count */
-
         static unsigned int vPushButton = 1;
-        unsigned int gv = rfBase.PushButton();
+        unsigned int gv = f3xBase.PushButton();
         if(gv == 0 && vPushButton == 1) { /* Raising edge */
-            if(frameCount >= 10) { /* Button debunce */
-                OnPushButton(rfBase, capFrame.cols, capFrame.rows);
-                frameCount = 0;
+            if(loopCount >= 10) { /* Button debunce */
+                OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                loopCount = 0;
             }
         }
         vPushButton = gv;
 
         uint8_t data[1];
-        if(rfBase.Read(data, 1)) {
-            if(rfBase.BaseType() == BASE_A) {
+        if(f3xBase.Read(data, 1)) {
+            if(f3xBase.BaseType() == BASE_A) {
                 if((data[0] & 0xc0) == 0x80) {
                     uint8_t v = data[0] & 0x3f;
                     if(v == 0x00) { /* BaseA Off - 10xx xxx0 */
                         if(bPause == false) {
-                            bPause = true;
-                            frameCount = 0;
+                            OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                            loopCount = 0;
                         }
                     } else if(v == 0x01) { /* BaseA On - 10xx xxx1 */
                         if(bPause == true) {
-                            bPause = false;
-                            frameCount = 0;
+                            OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                            loopCount = 0;
                         }
                     }
                 }
-            } else if(rfBase.BaseType() == BASE_B) {
+            } else if(f3xBase.BaseType() == BASE_B) {
                 if((data[0] & 0xc0) == 0xc0) {
                     uint8_t v = data[0] & 0x3f;
                     if(v == 0x00) { /* BaseB Off - 11xx xxx0 */
                         if(bPause == false) {
-                            bPause = true;
-                            frameCount = 0;
+                            OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                            loopCount = 0;
                         }
                     } else if(v == 0x01) { /* BaseB On - 11xx xxx1 */
                         if(bPause == true) {
-                            bPause = false;
-                            frameCount = 0;
+                            OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                            loopCount = 0;
                         }
                     }
                 }
             }           
         }
 
+        loopCount++; /* Increase loop count */
+
         if(bPause) {
-            rfBase.RedLed(off);
-            rfBase.Relay(off);
-            rfBase.GreenLed(on);
-            if(rfBase.IsVideoOutputFile())
-                rfBase.BlueLed(on);
+            f3xBase.RedLed(off);
+            f3xBase.Relay(off);
+            f3xBase.GreenLed(on);
+            if(f3xBase.IsVideoOutputFile())
+                f3xBase.BlueLed(on);
 
             usleep(10000); /* Wait 10ms */
             continue;
         }
 
-        if(frameCount % 2 == 0) {
-            rfBase.GreenLed(on); /* Flash during frames */
-            if(rfBase.IsVideoOutputFile())
-                rfBase.BlueLed(on);
+        cap.read(capFrame);
+
+        if(loopCount % 2 == 0) {
+            f3xBase.GreenLed(on); /* Flash during frames */
+            if(f3xBase.IsVideoOutputFile())
+                f3xBase.BlueLed(on);
         } else {
-            rfBase.GreenLed(off); /* Flash during frames */
-            if(rfBase.IsVideoOutputFile())
-                rfBase.BlueLed(off);
+            f3xBase.GreenLed(off); /* Flash during frames */
+            if(f3xBase.IsVideoOutputFile())
+                f3xBase.BlueLed(off);
         }
 
         cvtColor(capFrame, frame, COLOR_BGR2GRAY);
-        if(rfBase.IsVideoOutputResult()) {
-            if(rfBase.IsVideoOutputScreen() || rfBase.IsVideoOutputFile()) {
+        if(f3xBase.IsVideoOutputResult()) {
+            if(f3xBase.IsVideoOutput()) {
                 capFrame.copyTo(outFrame);
                 line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
             }
@@ -976,8 +1166,8 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
                 boundRect[i].height <= MAX_TARGET_HEIGHT) {
 
                     roiRect.push_back(boundRect[i]);
-                    if(rfBase.IsVideoOutputResult()) {
-                        if(rfBase.IsVideoOutputScreen() || rfBase.IsVideoOutputFile()) {
+                    if(f3xBase.IsVideoOutputResult()) {
+                        if(f3xBase.IsVideoOutput()) {
                             Scalar color = Scalar(rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255));
                             rectangle(outFrame, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0);
                         }
@@ -989,13 +1179,13 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 
         tracker.Update(roiRect);
 
-        rfBase.RedLed(off);
-        rfBase.Relay(off);
+        f3xBase.RedLed(off);
+        f3xBase.Relay(off);
 
         primaryTarget = tracker.PrimaryTarget();
         if(primaryTarget) {
-            if(rfBase.IsVideoOutputResult()) {
-                if(rfBase.IsVideoOutputScreen() || rfBase.IsVideoOutputFile()) {
+            if(f3xBase.IsVideoOutputResult()) {
+                if(f3xBase.IsVideoOutput()) {
                     Rect r = primaryTarget->m_rects.back();
                     rectangle(outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0);
                     if(primaryTarget->m_points.size() > 1) { /* Minimum 2 points ... */
@@ -1011,13 +1201,13 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
                     (primaryTarget->m_points[0].y < cy && primaryTarget->LatestPoint().y >= cy)) {
 
                     if(primaryTarget->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
-                        if(rfBase.IsVideoOutputResult()) {
-                            if(rfBase.IsVideoOutputScreen() || rfBase.IsVideoOutputFile())
+                        if(f3xBase.IsVideoOutputResult()) {
+                            if(f3xBase.IsVideoOutput())
                                 line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
                         }
-                        rfBase.Toggle(primaryTarget->TriggerCount() == 0);
-                        rfBase.RedLed(on);
-                        rfBase.Relay(on);
+                        f3xBase.Toggle(primaryTarget->TriggerCount() == 0);
+                        f3xBase.RedLed(on);
+                        f3xBase.Relay(on);
 
                         primaryTarget->Trigger();
                     }
@@ -1029,8 +1219,8 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         if (!background.empty())
             imshow("mean background image", background );
 */
-        if(rfBase.IsVideoOutputScreen() || rfBase.IsVideoOutputFile()) {
-            if(rfBase.IsVideoOutputResult()) {
+        if(f3xBase.IsVideoOutput()) {
+            if(f3xBase.IsVideoOutputResult()) {
                 char str[32];
                 snprintf(str, 32, "FPS : %.2lf", fps);
                 int fontFace = FONT_HERSHEY_SIMPLEX;
@@ -1053,21 +1243,22 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         t1 = high_resolution_clock::now();
     }
 
-    rfBase.GreenLed(off); /* Flash during frames */
-    rfBase.BlueLed(off); /* Flash during file save */
-    rfBase.RedLed(off); /* While object detected */
-    rfBase.Relay(off);
+    f3xBase.GreenLed(off); /* Flash during frames */
+    f3xBase.BlueLed(off); /* Flash during file save */
+    f3xBase.RedLed(off); /* While object detected */
+    f3xBase.Relay(off);
 
-    if(rfBase.IsVideoOutputScreen() || rfBase.IsVideoOutputFile()) {
+    if(f3xBase.IsVideoOutput()) {
         if(bPause == false) {
             videoWriterQueue.cancel();
             outThread.join();
         }
     }
 
-    rfBase.Close();
+    f3xBase.Close();
 
-    std::cout << "Finished ..." << endl;
+    cout << endl;
+    cout << "Finished ..." << endl;
 
     return 0;     
 }
