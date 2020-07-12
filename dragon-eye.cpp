@@ -353,16 +353,9 @@ void FrameQueue::reset()
 *
 */
 
-static bool validateIpAddress(const string &ipAddress)
-{
-    struct sockaddr_in sa;
-    int result = inet_pton(AF_INET, ipAddress.c_str(), &(sa.sin_addr));
-    return result != 0;
-}
-
 static FrameQueue videoWriterQueue;
 
-void VideoWriterThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, bool isVideoOutputRTP, int width, int height)
+void VideoWriterThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, bool isVideoOutputRTP, const char *rtpRemoteHost, int width, int height)
 {    
     Size videoSize = Size((int)width,(int)height);
     char gstStr[STR_SIZE];
@@ -428,28 +421,11 @@ nvvidconv flip-method=1 ! omxh265enc low-latency=1 control-rate=2 bitrate=400000
 h265parse ! rtph265pay mtu=1400 ! udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
             30);
 #else
-        snprintf(gstStr, STR_SIZE, "%s/udpsink.host", CONFIG_FILE_DIR);
-        ifstream input(gstStr);
-        string ip("10.0.0.1");
-        if(input.is_open()) {
-            for(string line; getline( input, line ); ) {
-                line.erase(remove_if(line.begin(), line.end(), ::isspace), line.end());
-                //line = std::regex_replace(line, std::regex("^ +| +$|( ) +"), "$1");
-                if(line[0] == '#')
-                    continue;
-                if(validateIpAddress(line)) { /* Minimum IP address length */
-                    ip = line;
-                    break;
-                }
-            }
-            input.close();
-        }
-
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh265enc low-latency=1 control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
 h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=false ",
-            30, ip.c_str());
+            30, rtpRemoteHost);
 #endif
         outRTP.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
         cout << endl;
@@ -503,6 +479,13 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=fal
 *
 */
 
+static bool ValidateIpAddress(const string &ipAddress)
+{
+    struct sockaddr_in sa;
+    int result = inet_pton(AF_INET, ipAddress.c_str(), &(sa.sin_addr));
+    return result != 0;
+}
+
 static size_t ParseConfigFile(char *file, map<string, string> & cfg)
 {
     ifstream input(file);
@@ -545,6 +528,8 @@ private:
     bool m_isVideoOutputFile;
     bool m_isVideoOutputRTP;
     bool m_isVideoOutputResult;
+
+    string m_rtpRemoteHost;
 
     int SetupTTY(int fd, int speed, int parity) {
         struct termios tty;
@@ -739,7 +724,7 @@ public:
     void UpdateSystemConfig() {
         char fn[STR_SIZE];
 
-        snprintf(fn, STR_SIZE, "%s/dragon-eye.config", CONFIG_FILE_DIR);
+        snprintf(fn, STR_SIZE, "%s/system.config", CONFIG_FILE_DIR);
         map<string, string> cfg;
         ParseConfigFile(fn, cfg);
 
@@ -781,6 +766,9 @@ public:
                     m_isVideoOutputResult = true;
                 else
                     m_isVideoOutputResult = false;
+            } else if(it->first == "rtp.remote.host") {
+                if(ValidateIpAddress(it->second))
+                    m_rtpRemoteHost = it->second;
             }
         }
     }
@@ -803,6 +791,10 @@ public:
 
     inline bool IsVideoOutputRTP() const {
         return m_isVideoOutputRTP;
+    }
+
+    const char *RTPRemoteHost() {
+        return m_rtpRemoteHost.c_str();
     }
 
     inline bool IsVideoOutput() const {
@@ -883,7 +875,7 @@ static void OnPushButton(F3xBase & r, int videoWidth, int videoHeight) {
         cout << "*** Object tracking started ***" << endl;
 
         if(r.IsVideoOutput())
-            outThread = thread(&VideoWriterThread, r.BaseType(), r.IsVideoOutputScreen(), r.IsVideoOutputFile(), r.IsVideoOutputRTP(), videoWidth, videoHeight);
+            outThread = thread(&VideoWriterThread, r.BaseType(), r.IsVideoOutputScreen(), r.IsVideoOutputFile(), r.IsVideoOutputRTP(), r.RTPRemoteHost(), videoWidth, videoHeight);
     }
 }
 
