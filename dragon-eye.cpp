@@ -913,6 +913,33 @@ static void OnPushButton(F3xBase & r, int videoWidth, int videoHeight) {
     }
 }
 
+void contour_moving_object(Mat & foregroundMask, vector<Rect> & roiRect, int y_offset = 0)
+{
+    uint32_t num_target = 0;
+
+    vector< vector<Point> > contours;
+    vector< Vec4i > hierarchy;
+//  findContours(foregroundMask, contours, hierarchy, RETR_TREE, CHAIN_APPROX_NONE);
+    findContours(foregroundMask, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+    sort(contours.begin(), contours.end(), ContoursSort); /* Contours sort by area, controus[0] is largest */
+
+    vector<Rect> boundRect( contours.size() );
+    for(int i=0; i<contours.size(); i++) {
+        approxPolyDP( Mat(contours[i]), contours[i], 3, true );
+        boundRect[i] = boundingRect( Mat(contours[i]) );
+        //drawContours(contoursImg, contours, i, color, 2, 8, hierarchy);
+        if(boundRect[i].width > MIN_TARGET_WIDTH && 
+            boundRect[i].height > MIN_TARGET_HEIGHT &&
+            boundRect[i].width <= MAX_TARGET_WIDTH && 
+            boundRect[i].height <= MAX_TARGET_HEIGHT) {
+                boundRect[i].y += y_offset;
+                roiRect.push_back(boundRect[i]);
+                if(++num_target >= MAX_NUM_TARGET)
+                    break;
+        }
+    }    
+}
+
 /*
 *
 */
@@ -1007,17 +1034,17 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
     }
 
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
 
     bool doUpdateModel = true;
     bool doSmoothMask = true;
 
-    Mat foregroundMask, background;
+    Mat foregroundMask;
     Mat outFrame;
 
     cuda::GpuMat gpuForegroundMask;
-    Ptr<cuda::Filter> gaussianFilter;
-    Ptr<cuda::Filter> erodeFilter;
-    Ptr<cuda::Filter> erodeFilter2;
+    Ptr<cuda::Filter> gaussianFilter = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 3.5);
+    Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
 
     Tracker tracker;
     Target *primaryTarget = 0;
@@ -1129,76 +1156,53 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             }
         }
 
-        cvtColor(capFrame, frame, COLOR_BGR2GRAY);
+        /* Gray color space for whole region */
 
+        Mat roiFrame;
+        cvtColor(capFrame, frame, COLOR_BGR2GRAY);
         int erosion_size = 6;   
         Mat element = cv::getStructuringElement(cv::MORPH_RECT,
                           cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
                           cv::Point(-1, -1) ); /* Default anchor point */
-#if 0 /* Very poor performance ... Running by CPU is 10 times quick */
-        gpuFrame.upload(frame);
-        if(erodeFilter.empty()) 
-            erodeFilter = cuda::createMorphologyFilter(MORPH_ERODE, gpuFrame.type(), element);
-        erodeFilter->apply(gpuFrame, gpuFrame);
-#else
+
         erode(frame, frame, element);
         gpuFrame.upload(frame);	
-#endif    
+
         bsModel->apply(gpuFrame, gpuForegroundMask, doUpdateModel ? -1 : 0);
 
         if(doSmoothMask) {
-            if(gaussianFilter.empty())
-                gaussianFilter = cuda::createGaussianFilter(gpuForegroundMask.type(), gpuForegroundMask.type(), Size(5, 5), 3.5);
-
             gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
-            /* Disable threadhold while low background noise */
-            /* 10.0 may be good senstitive */
-            //cuda::threshold(gpuForegroundMask, gpuForegroundMask, 10.0, 255.0, THRESH_BINARY);
-            /* 40.0 with lower senstitive */
-            //cuda::threshold(gpuForegroundMask, gpuForegroundMask, 40.0, 255.0, THRESH_BINARY);
-#if 0
-            if(erodeFilter2.empty()) 
-                erodeFilter2 = cuda::createMorphologyFilter(MORPH_ERODE, gpuForegroundMask.type(), element);
-            erodeFilter2->apply(gpuForegroundMask, gpuForegroundMask);
-            gpuForegroundMask.download(foregroundMask);
-#else
             gpuForegroundMask.download(foregroundMask);
             erode(foregroundMask, foregroundMask, element);
-#endif
         } else
             gpuForegroundMask.download(foregroundMask);
 
-		vector< vector<Point> > contours;
-    	vector< Vec4i > hierarchy;
-//    	findContours(foregroundMask, contours, hierarchy, RETR_TREE, CHAIN_APPROX_NONE);
-        findContours(foregroundMask, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-        sort(contours.begin(), contours.end(), ContoursSort); /* Contours sort by area, controus[0] is largest */
-
-        vector<Rect> boundRect(contours.size());
         vector<Rect> roiRect;
 
-        RNG rng(12345);
+        contour_moving_object(foregroundMask, roiRect);
 
-    	for(int i=0; i<contours.size(); i++) {
-    		approxPolyDP( Mat(contours[i]), contours[i], 3, true );
-       		boundRect[i] = boundingRect( Mat(contours[i]) );
-       		//drawContours(contoursImg, contours, i, color, 2, 8, hierarchy);
-    		if(boundRect[i].width > MIN_TARGET_WIDTH && 
-                boundRect[i].height > MIN_TARGET_HEIGHT &&
-    			boundRect[i].width <= MAX_TARGET_WIDTH && 
-                boundRect[i].height <= MAX_TARGET_HEIGHT) {
+        /* HSV color space Hue channel for bottom 1/3 region */
 
-                    roiRect.push_back(boundRect[i]);
-                    if(f3xBase.IsVideoOutputResult()) {
-                        if(f3xBase.IsVideoOutput()) {
-                            Scalar color = Scalar(rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255));
-                            rectangle(outFrame, boundRect[i].tl(), boundRect[i].br(), color, 2, 8, 0);
-                        }
-                    }
-    		}
-            if(roiRect.size() >= MAX_NUM_TARGET) /* Deal top 5 only */
-                break;
-    	}
+        Mat hsvFrame;
+        int y_offset = capFrame.rows * 2 / 3;
+        capFrame(Rect(0, y_offset, capFrame.cols, capFrame.rows - y_offset)).copyTo(roiFrame);
+        cvtColor(roiFrame, hsvFrame, COLOR_BGR2HSV);
+        Mat hsvCh[3];
+        split(hsvFrame, hsvCh);
+
+        erode(hsvCh[0], hsvCh[0], element);
+        gpuFrame.upload(hsvCh[0]); 
+
+        bsModel2->apply(gpuFrame, gpuForegroundMask, doUpdateModel ? -1 : 0);
+
+        if(doSmoothMask) {
+            gaussianFilter2->apply(gpuForegroundMask, gpuForegroundMask);
+            gpuForegroundMask.download(foregroundMask);
+            erode(foregroundMask, foregroundMask, element);
+        } else
+            gpuForegroundMask.download(foregroundMask);
+
+        contour_moving_object(foregroundMask, roiRect, y_offset);
 
         tracker.Update(roiRect);
 
@@ -1238,6 +1242,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             }
         }
 /*
+        Mat background;
         bsModel->getBackgroundImage(background);
         if (!background.empty())
             imshow("mean background image", background );
