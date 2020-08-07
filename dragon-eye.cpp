@@ -181,24 +181,27 @@ public:
     Tracker() : m_frameTick(0), m_primaryTarget(0) {}
 
     void Update(vector< Rect > & roiRect) {
-        const int euclidean_distance = 120;
+        const int euclidean_distance = 240;
 
         if(m_primaryTarget) {
             Target *t = m_primaryTarget;
             int i;
             for(i=0; i<roiRect.size(); i++) {
                 Rect r = t->m_rects.back();
-                if((r & roiRect[i]).area() > 0) /* Target tracked by region overlap  */
+                if((r & roiRect[i]).area() > 0) /* Target tracked ... */
                     break;                
 
                 unsigned long f = m_frameTick - t->FrameTick();
                 r.x += t->m_velocity.x * f;
                 r.y += t->m_velocity.y * f;
-                if((r & roiRect[i]).area() > 0) /* Target tracked by velocity ... */
+                if((r & roiRect[i]).area() > 0) /* Target tracked with velocity ... */
                     break;
-
+#if 0
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with velocity and Euclidean distance ... */
+                    break;
+#endif
                 r = t->m_rects.back();
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked by Euclidean distance ... */
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with Euclidean distance ... */
                     break;
             }
             if(i != roiRect.size()) { /* Primary Target tracked */
@@ -219,14 +222,17 @@ public:
                 r.y += t->m_velocity.y * f;
                 if((r & roiRect[i]).area() > 0) /* Target tracked with velocity ... */
                     break;
-
+#if 0
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with velocity and Euclidean distance ... */
+                    break;
+#endif
                 r = t->m_rects.back();
                 if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with Euclidean distance ... */
                     break;
             }
             if(i == roiRect.size()) { /* Target missing ... */
                 if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) { /* Target still missing for over X frames */
-#ifdef DEBUG            
+#if 1            
                     Point p = t->m_points.back();
                     printf("lost target : %d, %d\n", p.x, p.y);
 #endif
@@ -252,15 +258,21 @@ public:
                 r.y += t->m_velocity.y * f;
                 if((r & roiRect[i]).area() > 0) /* Next step tracked with velocity ... */
                     break;
-
+#if 0
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with velocity and Euclidean distance ... */
+                    break;
+#endif
                 r = t->m_rects.back();
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with Euclidean distance ... */                    
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with Euclidean distance ... */                   
                     break;
             }
-
             if(t == m_targets.end()) { /* New target */
+#if 0
+                if(roiRect[i].y > 960)
+                    continue;
+#endif
                 m_targets.push_back(Target(roiRect[i], m_frameTick));
-#ifdef DEBUG            
+#if 1            
                 printf("new target : %d, %d\n", roiRect[i].tl().x, roiRect[i].tl().y);
 #endif
             } else
@@ -278,10 +290,20 @@ public:
     }
 
     Target *PrimaryTarget() {
-        if(m_targets.size() == 0)
-            return 0;
+//        if(m_targets.size() == 0)
+//            return 0;
 
+//        m_targets.sort(TargetSort);
+#if 0
+        list< Target >::iterator t;
+        for(t=m_targets.begin();t!=m_targets.end();t++) {
+            if(t->ArcLength() > 320)
+                return &(*t);
+        }
+        return 0;
+#else
         return m_primaryTarget;
+#endif
     }
 };
 
@@ -486,7 +508,7 @@ static bool ValidateIpAddress(const string &ipAddress)
     return result != 0;
 }
 
-static size_t ParseConfigFile(char *file, map<string, string> & cfg)
+static size_t ParseConfigFile(char *file, vector<pair<string, string> > & cfg)
 {
     ifstream input(file);
     if(input.is_open()) {
@@ -503,7 +525,8 @@ static size_t ParseConfigFile(char *file, map<string, string> & cfg)
             name = std::regex_replace(name, std::regex(" +$"), ""); /* Remove tail space */
             value = std::regex_replace(value, std::regex("^ +"), ""); /* Remove leading space */
 
-            cfg.insert(pair<string, string>(name, value));
+            //cfg.insert(pair<string, string>(name, value));
+            cfg.push_back(make_pair(name, value));
         }
         input.close();
     }
@@ -518,12 +541,13 @@ class F3xBase {
 private:
     int m_ttyFd;
     BaseType_t m_baseType;
+    bool m_isBaseRemoteControl;
 
     jetsonNanoGPIONumber m_redLED, m_greenLED, m_blueLED, m_relay;
     jetsonNanoGPIONumber m_videoOutputScreenSwitch, m_videoOutputFileSwitch;
     jetsonNanoGPIONumber m_baseSwitch, m_videoOutputResultSwitch, m_pushButton;
 
-    bool m_isVideoOutputHwSwitch;
+    bool m_isBaseHwSwitch;
     bool m_isVideoOutputScreen;
     bool m_isVideoOutputFile;
     bool m_isVideoOutputRTP;
@@ -571,11 +595,11 @@ private:
     }
 
 public:
-    F3xBase() : m_ttyFd(0), m_baseType(BASE_A),
+    F3xBase() : m_ttyFd(0), m_baseType(BASE_A), m_isBaseRemoteControl(false),
         m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51),
         m_videoOutputScreenSwitch(gpio19), m_videoOutputFileSwitch(gpio20),
         m_baseSwitch(gpio12), m_videoOutputResultSwitch(gpio13), m_pushButton(gpio18),
-        m_isVideoOutputHwSwitch(false), 
+        m_isBaseHwSwitch(false), 
         m_isVideoOutputScreen(false), 
         m_isVideoOutputFile(false), 
         m_isVideoOutputRTP(false), 
@@ -644,6 +668,7 @@ public:
 
     int Open() {
         const char *ttyName = "/dev/ttyTHS1";
+        //const char *ttyName = "/dev/ttyUSB0";
 
         m_ttyFd = open (ttyName, O_RDWR | O_NOCTTY | O_SYNC);
         if (m_ttyFd)
@@ -684,7 +709,7 @@ public:
 
     void UpdateHwSwitch() {
         cout << endl;
-        cout << "### System config HW switch" << endl; 
+        cout << "### H/W switch" << endl; 
 
         unsigned int gv;
         gpioGetValue(m_baseSwitch, &gv);
@@ -725,12 +750,12 @@ public:
         char fn[STR_SIZE];
 
         snprintf(fn, STR_SIZE, "%s/system.config", CONFIG_FILE_DIR);
-        map<string, string> cfg;
+        vector<pair<string, string> > cfg;
         ParseConfigFile(fn, cfg);
 
         cout << endl;
         cout << "### System config" << endl; 
-        map<string, string>::iterator it;
+        vector<pair<string, string> >::iterator it;
         for (it=cfg.begin(); it!=cfg.end(); it++) {
             cout << it->first << " = " << it->second << endl;
             
@@ -741,11 +766,16 @@ public:
                     m_baseType = BASE_B;
                 else
                     m_baseType = BASE_UNKNOWN;
-            } else if(it->first == "video.output.hwswitch") {
+            } else if(it->first == "base.remote.control") {
                 if(it->second == "yes" || it->second == "1")
-                    m_isVideoOutputHwSwitch = true;
+                    m_isBaseRemoteControl = true;
                 else
-                    m_isVideoOutputHwSwitch = false;
+                    m_isBaseRemoteControl = false;
+            } else if(it->first == "base.hwswitch") {
+                if(it->second == "yes" || it->second == "1")
+                    m_isBaseHwSwitch = true;
+                else
+                    m_isBaseHwSwitch = false;
             } else if(it->first == "video.output.screen") {
                 if(it->second == "yes" || it->second == "1")
                     m_isVideoOutputScreen = true;
@@ -777,8 +807,12 @@ public:
         return m_baseType;
     }
 
-    inline bool IsVideoOutputHwSwitch() {
-        return m_isVideoOutputHwSwitch;        
+    inline bool IsBaseRemoteControl() const {
+        return m_isBaseRemoteControl;
+    }
+
+    inline bool IsBaseHwSwitch() {
+        return m_isBaseHwSwitch;        
     }
 
     inline bool IsVideoOutputScreen() const {
@@ -868,7 +902,7 @@ static void OnPushButton(F3xBase & r, int videoWidth, int videoHeight) {
         }
     } else {/* Restart, record new video */
         r.UpdateSystemConfig();
-        if(r.IsVideoOutputHwSwitch()) /* Overwrite config by HW switch */
+        if(r.IsBaseHwSwitch()) /* Overwrite config by HW switch */
             r.UpdateHwSwitch();
 
         cout << endl;
@@ -891,7 +925,7 @@ int main(int argc, char**argv)
     f3xBase.SetupGPIO();
     f3xBase.Open();
     f3xBase.UpdateSystemConfig();
-    if(f3xBase.IsVideoOutputHwSwitch()) /* Overwrite config by HW switch */
+    if(f3xBase.IsBaseHwSwitch()) /* Overwrite config by HW switch */
         f3xBase.UpdateHwSwitch();
 
     if(signal(SIGINT, sig_handler) == SIG_ERR)
@@ -900,7 +934,7 @@ int main(int argc, char**argv)
     char gstStr[STR_SIZE];
 
     snprintf(gstStr, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
-    map<string, string> cfg;
+    vector<pair<string, string> > cfg;
     ParseConfigFile(gstStr, cfg);
 
     int wbmode = 0;
@@ -915,7 +949,7 @@ int main(int argc, char**argv)
 
     cout << endl;
     cout << "### Camera config" << endl; 
-    map<string, string>::iterator it;
+    vector<pair<string, string> >::iterator it;
     for (it=cfg.begin(); it!=cfg.end(); it++) {
         cout << it->first << " = " << it->second << endl;
         if(it->first == "wbmode")
@@ -1026,41 +1060,43 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         }
         vPushButton = gv;
 
-        uint8_t data[1];
-        if(f3xBase.Read(data, 1)) {
-            if(f3xBase.BaseType() == BASE_A) {
-                if((data[0] & 0xc0) == 0x80) {
-                    uint8_t v = data[0] & 0x3f;
-                    if(v == 0x00) { /* BaseA Off - 10xx xxx0 */
-                        if(bPause == false) {
-                            OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
-                            loopCount = 0;
-                        }
-                    } else if(v == 0x01) { /* BaseA On - 10xx xxx1 */
-                        if(bPause == true) {
-                            OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
-                            loopCount = 0;
-                        }
-                    }
-                }
-            } else if(f3xBase.BaseType() == BASE_B) {
-                if((data[0] & 0xc0) == 0xc0) {
-                    uint8_t v = data[0] & 0x3f;
-                    if(v == 0x00) { /* BaseB Off - 11xx xxx0 */
-                        if(bPause == false) {
-                            OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
-                            loopCount = 0;
-                        }
-                    } else if(v == 0x01) { /* BaseB On - 11xx xxx1 */
-                        if(bPause == true) {
-                            OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
-                            loopCount = 0;
+        if(f3xBase.IsBaseRemoteControl()) {
+            uint8_t data[1];
+            if(f3xBase.Read(data, 1)) {
+                if(f3xBase.BaseType() == BASE_A) {
+                    if((data[0] & 0xc0) == 0x80) {
+                        uint8_t v = data[0] & 0x3f;
+                        if(v == 0x00) { /* BaseA Off - 10xx xxx0 */
+                            if(bPause == false) {
+                                OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                                loopCount = 0;
+                            }
+                        } else if(v == 0x01) { /* BaseA On - 10xx xxx1 */
+                            if(bPause == true) {
+                                OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                                loopCount = 0;
+                            }
                         }
                     }
-                }
-            }           
+                } else if(f3xBase.BaseType() == BASE_B) {
+                    if((data[0] & 0xc0) == 0xc0) {
+                        uint8_t v = data[0] & 0x3f;
+                        if(v == 0x00) { /* BaseB Off - 11xx xxx0 */
+                            if(bPause == false) {
+                                OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                                loopCount = 0;
+                            }
+                        } else if(v == 0x01) { /* BaseB On - 11xx xxx1 */
+                            if(bPause == true) {
+                                OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                                loopCount = 0;
+                            }
+                        }
+                    }
+                }           
+            }
         }
-
+        
         loopCount++; /* Increase loop count */
 
         if(bPause) {
@@ -1074,8 +1110,6 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             continue;
         }
 
-        cap.read(capFrame);
-
         if(loopCount % 2 == 0) {
             f3xBase.GreenLed(on); /* Flash during frames */
             if(f3xBase.IsVideoOutputFile())
@@ -1086,7 +1120,8 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
                 f3xBase.BlueLed(off);
         }
 
-        cvtColor(capFrame, frame, COLOR_BGR2GRAY);
+        cap.read(capFrame);
+
         if(f3xBase.IsVideoOutputResult()) {
             if(f3xBase.IsVideoOutput()) {
                 capFrame.copyTo(outFrame);
@@ -1094,10 +1129,12 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             }
         }
 
+        cvtColor(capFrame, frame, COLOR_BGR2GRAY);
+
         int erosion_size = 6;   
         Mat element = cv::getStructuringElement(cv::MORPH_RECT,
                           cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
-                          cv::Point(erosion_size, erosion_size) );
+                          cv::Point(-1, -1) ); /* Default anchor point */
 #if 0 /* Very poor performance ... Running by CPU is 10 times quick */
         gpuFrame.upload(frame);
         if(erodeFilter.empty()) 
@@ -1109,27 +1146,21 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 #endif    
         bsModel->apply(gpuFrame, gpuForegroundMask, doUpdateModel ? -1 : 0);
 
-        if(gaussianFilter.empty())
-            gaussianFilter = cuda::createGaussianFilter(gpuForegroundMask.type(), gpuForegroundMask.type(), Size(5, 5), 3.5);
-
         if(doSmoothMask) {
+            if(gaussianFilter.empty())
+                gaussianFilter = cuda::createGaussianFilter(gpuForegroundMask.type(), gpuForegroundMask.type(), Size(5, 5), 3.5);
+
             gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
             /* Disable threadhold while low background noise */
             /* 10.0 may be good senstitive */
             //cuda::threshold(gpuForegroundMask, gpuForegroundMask, 10.0, 255.0, THRESH_BINARY);
             /* 40.0 with lower senstitive */
             //cuda::threshold(gpuForegroundMask, gpuForegroundMask, 40.0, 255.0, THRESH_BINARY);
-            
-			/* Erode & Dilate */
-            int erosion_size = 6;   
-            Mat element = cv::getStructuringElement(cv::MORPH_RECT,
-                          cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
-                          cv::Point(erosion_size, erosion_size) );
 #if 0
-        if(erodeFilter2.empty()) 
-            erodeFilter2 = cuda::createMorphologyFilter(MORPH_ERODE, gpuForegroundMask.type(), element);
-        erodeFilter2->apply(gpuForegroundMask, gpuForegroundMask);
-        gpuForegroundMask.download(foregroundMask);
+            if(erodeFilter2.empty()) 
+                erodeFilter2 = cuda::createMorphologyFilter(MORPH_ERODE, gpuForegroundMask.type(), element);
+            erodeFilter2->apply(gpuForegroundMask, gpuForegroundMask);
+            gpuForegroundMask.download(foregroundMask);
 #else
             gpuForegroundMask.download(foregroundMask);
             erode(foregroundMask, foregroundMask, element);
@@ -1234,6 +1265,8 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 
         t1 = high_resolution_clock::now();
     }
+
+    cap.release();
 
     f3xBase.GreenLed(off); /* Flash during frames */
     f3xBase.BlueLed(off); /* Flash during file save */
