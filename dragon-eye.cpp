@@ -88,6 +88,9 @@ void sig_handler(int signo)
     if(signo == SIGINT) {
         printf("SIGINT\n");
         bShutdown = true;
+    } else if(signo == SIGHUP) {
+        printf("SIGHUP\n");
+        bPause = !bPause;
     }
 }
 
@@ -123,6 +126,18 @@ public:
     vector< Point > m_points;
     Point m_velocity;
 
+    void Reset() {
+        Rect r = m_rects.back();
+        Point p = r.tl();
+        m_rects.clear();
+        m_points.clear();
+        m_rects.push_back(r);
+        m_points.push_back(p);
+        m_triggerCount = 0;
+        //m_frameTick =
+        //m_courseLength = 0; /* TODO : Do clear this ? */
+    }
+
     void Update(Rect & roi, unsigned long frameTick) {
         if(m_rects.size() > 0)
             m_courseLength += norm(roi.tl() - m_rects.back().tl());
@@ -137,20 +152,12 @@ public:
         m_rects.push_back(roi);
         m_points.push_back(roi.tl());
         m_frameTick = frameTick;
-    }
-#if 0
-    void Reset() {
-        Rect r = m_rects.back();
-        Point p = r.tl();
-        m_rects.clear();
-        m_points.clear();
-        m_rects.push_back(r);
-        m_points.push_back(p);
-        m_triggerCount = 0;
-        //m_frameTick =
-        m_courseLength = 0; /* TODO : Do clear this ? */
-    }
+#if 1
+        if(m_triggerCount >= MAX_NUM_TRIGGER)
+            Reset();
 #endif
+    }
+
     inline double CourseLength() { return m_courseLength; }
     inline unsigned long FrameTick() { return m_frameTick; }
     inline Rect & LatestRect() { return m_rects.back(); }
@@ -671,10 +678,11 @@ public:
         //const char *ttyName = "/dev/ttyUSB0";
 
         m_ttyFd = open (ttyName, O_RDWR | O_NOCTTY | O_SYNC);
-        if (m_ttyFd)
+        if(m_ttyFd) {
             SetupTTY(m_ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
-        else
-            printf("error %d opening %s: %s\n", errno, ttyName, strerror (errno));
+            printf("Open %s successful ...\n", ttyName);
+        } else
+            printf("Error %d opening %s: %s\n", errno, ttyName, strerror (errno));
 
         return m_ttyFd;
     }
@@ -766,7 +774,7 @@ public:
                     m_baseType = BASE_B;
                 else
                     m_baseType = BASE_UNKNOWN;
-            } else if(it->first == "base.remote.control") {
+            } else if(it->first == "base.remote.control") { /* Start or Pasue can be remote control */
                 if(it->second == "yes" || it->second == "1")
                     m_isBaseRemoteControl = true;
                 else
@@ -776,6 +784,7 @@ public:
                     m_isBaseHwSwitch = true;
                 else
                     m_isBaseHwSwitch = false;
+            } else if(it->first == "base.trigger.reset") { /**/
             } else if(it->first == "video.output.screen") {
                 if(it->second == "yes" || it->second == "1")
                     m_isVideoOutputScreen = true;
@@ -958,6 +967,9 @@ int main(int argc, char**argv)
     if(signal(SIGINT, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGINT\n");
 
+    if(signal(SIGHUP, sig_handler) == SIG_ERR)
+        printf("\ncan't catch SIGHUP\n");
+
     char gstStr[STR_SIZE];
 
     snprintf(gstStr, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
@@ -1033,16 +1045,12 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         return 1;
     }
 
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
-
-    bool doUpdateModel = true;
-    bool doSmoothMask = true;
-
     Mat foregroundMask;
     Mat outFrame;
 
     cuda::GpuMat gpuForegroundMask;
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 32, false); /* background history count, varThreshold, shadow detection */
     Ptr<cuda::Filter> gaussianFilter = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 3.5);
     Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
 
@@ -1168,14 +1176,11 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         erode(frame, frame, element);
         gpuFrame.upload(frame);	
 
-        bsModel->apply(gpuFrame, gpuForegroundMask, doUpdateModel ? -1 : 0);
+        bsModel->apply(gpuFrame, gpuForegroundMask, -1);
 
-        if(doSmoothMask) {
-            gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
-            gpuForegroundMask.download(foregroundMask);
-            erode(foregroundMask, foregroundMask, element);
-        } else
-            gpuForegroundMask.download(foregroundMask);
+        gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
+        gpuForegroundMask.download(foregroundMask);
+        erode(foregroundMask, foregroundMask, element);
 
         vector<Rect> roiRect;
 
@@ -1193,14 +1198,11 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         erode(hsvCh[0], hsvCh[0], element);
         gpuFrame.upload(hsvCh[0]); 
 
-        bsModel2->apply(gpuFrame, gpuForegroundMask, doUpdateModel ? -1 : 0);
+        bsModel2->apply(gpuFrame, gpuForegroundMask, -1);
 
-        if(doSmoothMask) {
-            gaussianFilter2->apply(gpuForegroundMask, gpuForegroundMask);
-            gpuForegroundMask.download(foregroundMask);
-            erode(foregroundMask, foregroundMask, element);
-        } else
-            gpuForegroundMask.download(foregroundMask);
+        gaussianFilter2->apply(gpuForegroundMask, gpuForegroundMask);
+        gpuForegroundMask.download(foregroundMask);
+        erode(foregroundMask, foregroundMask, element);
 
         contour_moving_object(foregroundMask, roiRect, y_offset);
 
