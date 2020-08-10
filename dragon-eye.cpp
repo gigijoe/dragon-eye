@@ -897,6 +897,7 @@ public:
     string ispdigitalgainrange; /* Default null */
     string exposuretimerange; /* Default null */
     int exposurecompensation = 0;
+    int exposurethreshold = 255;
     int width, height;
 
     Camera() : wbmode(0), tnr_mode(-1), tnr_strength(-1), ee_mode(1), ee_strength(-1), 
@@ -994,25 +995,31 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
                 exposuretimerange = it->second;
             else if(it->first == "exposurecompensation")
                 exposurecompensation = stoi(it->second);
+            else if(it->first == "exposurethreshold")
+                exposurethreshold = stoi(it->second);
         }
         cout << endl;
     }
 
     void UpdateExposure() {
-        string exposureTimeRange[3] = {
-            "5000000 20000000",
-            "5000000 10000000",
-            "1000000 5000000"
+        const char *exposureTimeRange[5] = {
+            "\"5000000 10000000\"",
+            "\"3000000 8000000\"",
+            "\"1000000 5000000\"",
+            "\"500000 2000000\"",
+            "\"250000 1000000\""
         };
 
         if(cap.isOpened())
             cap.release();
 
-        for(int i=0;i<3;i++) {
+        vector<pair<string, float> > exposure_brightness;
+
+        for(int i=0;i<5;i++) {
             snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
-                wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposureTimeRange[i].c_str(), exposurecompensation,
+                wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposureTimeRange[i], exposurecompensation,
                 CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 
             cap.open(gstStr, cv::CAP_GSTREAMER);
@@ -1031,17 +1038,32 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             
             cap.release();
 
-            cout << "Exposure time range - " << exposureTimeRange[i] << " : Brightness - " << meanValue << endl;
-
-            if(meanValue <= 200.0f) {
+            //cout << "Exposure time range - " << exposureTimeRange[i] << " : Brightness - " << meanValue << endl;
+/*
+            if(meanValue <= exposurethreshold) {
                 exposuretimerange = exposureTimeRange[i];
                 break;
             }
+*/
+            exposure_brightness.push_back(make_pair(exposureTimeRange[i], meanValue));
         }
+
+        vector<pair<string, float> >::iterator it;
+        for (it=exposure_brightness.begin(); it!=exposure_brightness.end(); it++) {
+            cout << "Exposure time range - " << it->first << " : Brightness - " << it->second << endl;
+        }
+
     }
 };
 
 static Camera camera; 
+
+/*
+*
+*/
+
+static bool bShutdown = false;
+static bool bPause = true;
 
 /*
 *
@@ -1066,8 +1088,8 @@ static void OnPushButton(F3xBase & fb)
         }
     } else { /* Restart, record new video */
         fb.UpdateSystemConfig();
-        if(r.IsBaseHwSwitch()) /* Overwrite config by HW switch */
-            r.UpdateHwSwitch();
+        if(fb.IsBaseHwSwitch()) /* Overwrite config by HW switch */
+            fb.UpdateHwSwitch();
 
         cout << endl;
         cout << "*** Object tracking started ***" << endl;
@@ -1075,7 +1097,7 @@ static void OnPushButton(F3xBase & fb)
         camera.Open();
 
         if(fb.IsVideoOutput())
-            outThread = thread(&VideoWriterThread, r.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), fb.IsVideoOutputRTP(), fb.RTPRemoteHost(), camCfg.width, camCfg.height);
+            outThread = thread(&VideoWriterThread, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), fb.IsVideoOutputRTP(), fb.RTPRemoteHost(), camera.width, camera.height);
     }
 }
 
@@ -1110,9 +1132,6 @@ static void contour_moving_object(Mat & foregroundMask, vector<Rect> & roiRect, 
 *
 */
 
-static bool bShutdown = false;
-static bool bPause = true;
-
 void sig_handler(int signo)
 {
     if(signo == SIGINT) {
@@ -1123,6 +1142,10 @@ void sig_handler(int signo)
         OnPushButton(f3xBase);
     }
 }
+
+/*
+*
+*/
 
 int main(int argc, char**argv)
 {
@@ -1141,7 +1164,7 @@ int main(int argc, char**argv)
     f3xBase.SetupGPIO();
     f3xBase.Open();
 
-    camera.UpdateCameraConfig()
+    camera.UpdateCameraConfig();
     if(!camera.Open())
         return 1;
 
@@ -1150,11 +1173,6 @@ int main(int argc, char**argv)
 
     camera.UpdateExposure();
 
-    Mat foregroundMask;
-    Mat capFrame;
-    Mat outFrame;
-
-    cuda::GpuMat gpuForegroundMask;
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 32, false); /* background history count, varThreshold, shadow detection */
     Ptr<cuda::Filter> gaussianFilter = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 3.5);
@@ -1246,8 +1264,10 @@ int main(int argc, char**argv)
                 f3xBase.BlueLed(off);
         }
 
+        Mat capFrame;
         camera.Read(capFrame);
 
+        Mat outFrame;
         if(f3xBase.IsVideoOutputResult()) {
             if(f3xBase.IsVideoOutput()) {
                 capFrame.copyTo(outFrame);
@@ -1269,8 +1289,10 @@ int main(int argc, char**argv)
         erode(grayFrame, grayFrame, element);
         gpuFrame.upload(grayFrame);	
 
+        cuda::GpuMat gpuForegroundMask;
         bsModel->apply(gpuFrame, gpuForegroundMask, -1);
 
+        Mat foregroundMask;
         gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
         gpuForegroundMask.download(foregroundMask);
         erode(foregroundMask, foregroundMask, element);
