@@ -80,20 +80,6 @@ using std::chrono::seconds;
 
 typedef enum { BASE_UNKNOWN, BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType_t;
 
-static bool bShutdown = false;
-static bool bPause = true;
-
-void sig_handler(int signo)
-{
-    if(signo == SIGINT) {
-        printf("SIGINT\n");
-        bShutdown = true;
-    } else if(signo == SIGHUP) {
-        printf("SIGHUP\n");
-        bPause = !bPause;
-    }
-}
-
 /*
 *
 */
@@ -896,33 +882,204 @@ static F3xBase f3xBase;
 *
 */
 
+class Camera {
+private:
+    VideoCapture cap;
+    char gstStr[STR_SIZE];
+
+public:
+    int wbmode = 0;
+    int tnr_mode = 1;
+    int tnr_strength = -1;
+    int ee_mode = 1;
+    int ee_strength = -1;
+    string gainrange; /* Default null */
+    string ispdigitalgainrange; /* Default null */
+    string exposuretimerange; /* Default null */
+    int exposurecompensation = 0;
+    int width, height;
+
+    Camera() : wbmode(0), tnr_mode(-1), tnr_strength(-1), ee_mode(1), ee_strength(-1), 
+        gainrange("1 16"), ispdigitalgainrange("1 8"), exposuretimerange("5000000 20000000"),
+        exposurecompensation(0), width(1280), height(720) {
+    }
+
+    bool Open() {
+        if(cap.isOpened())
+            return true;
+/* Reference : nvarguscamerasrc.txt */
+/* export GST_DEBUG=2 to show debug message */
+#if 0
+    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=0 ! \
+video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+#else
+        snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
+video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+            wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
+            CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+#endif
+/*
+        snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video1 ! \
+video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+            CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+*/
+        cap.open(gstStr, cv::CAP_GSTREAMER);
+
+        cout << endl;
+        cout << gstStr << endl;
+        cout << endl;
+
+        if(!cap.isOpened()) {
+            cout << endl;
+            cout << "!!! Could not open video" << endl;
+            return false;
+        }
+
+        int retryCount = 0;
+        Mat capFrame;
+        while(retryCount++ < 30) {
+            if(cap.read(capFrame))
+                break;
+            else
+                usleep(10000);
+        }
+        if(retryCount >= 30) {
+            cap.release();
+            return false;
+        }
+
+        width = capFrame.cols;
+        height = capFrame.rows;
+        
+        return true;
+    }
+
+    void Close() {
+        if(cap.isOpened())
+            cap.release();
+    }
+
+    inline bool Read(OutputArray & a) { return cap.read(a); }
+
+    void UpdateCameraConfig() {
+        char str[STR_SIZE];
+        snprintf(str, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
+        vector<pair<string, string> > cfg;
+        ParseConfigFile(str, cfg);
+
+        cout << endl;
+        cout << "### Camera config" << endl; 
+        vector<pair<string, string> >::iterator it;
+        for (it=cfg.begin(); it!=cfg.end(); it++) {
+            cout << it->first << " = " << it->second << endl;
+            if(it->first == "wbmode")
+                wbmode = stoi(it->second);
+            else if(it->first == "tnr-mode")
+                tnr_mode = stoi(it->second);
+            else if(it->first == "tnr-strength")
+                tnr_strength = stoi(it->second);
+            else if(it->first == "ee-mode")
+                ee_mode = stoi(it->second);
+            else if(it->first == "ee-strength")
+                ee_strength = stoi(it->second);
+            else if(it->first == "gainrange")
+                gainrange = it->second;
+            else if(it->first == "ispdigitalgainrange")
+                ispdigitalgainrange = it->second;
+            else if(it->first == "exposuretimerange")
+                exposuretimerange = it->second;
+            else if(it->first == "exposurecompensation")
+                exposurecompensation = stoi(it->second);
+        }
+        cout << endl;
+    }
+
+    void UpdateExposure() {
+        string exposureTimeRange[3] = {
+            "5000000 20000000",
+            "5000000 10000000",
+            "1000000 5000000"
+        };
+
+        if(cap.isOpened())
+            cap.release();
+
+        for(int i=0;i<3;i++) {
+            snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
+video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+                wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposureTimeRange[i].c_str(), exposurecompensation,
+                CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+
+            cap.open(gstStr, cv::CAP_GSTREAMER);
+
+            Mat capFrame;
+            int meanCount = 30;
+            float meanValue = 0;
+            while(meanCount-- > 0) {
+                cap.read(capFrame);
+                Mat grayFrame;
+                cvtColor(capFrame, grayFrame, COLOR_BGR2GRAY);
+                Scalar v = mean(grayFrame);
+                meanValue += v.val[0];
+            }
+            meanValue /= 30;
+            
+            cap.release();
+
+            cout << "Exposure time range - " << exposureTimeRange[i] << " : Brightness - " << meanValue << endl;
+
+            if(meanValue <= 200.0f) {
+                exposuretimerange = exposureTimeRange[i];
+                break;
+            }
+        }
+    }
+};
+
+static Camera camera; 
+
+/*
+*
+*/
+
 static thread outThread;
 
-static void OnPushButton(F3xBase & r, int videoWidth, int videoHeight) {
+static void OnPushButton(F3xBase & fb) 
+{
     bPause = !bPause;
 
     if(bPause) {
         cout << endl;
         cout << "*** Object tracking stoped ***" << endl;
 
-        if(r.IsVideoOutput()) {
+        camera.UpdateExposure();
+        //camera.Close();
+        
+        if(fb.IsVideoOutput()) {
             videoWriterQueue.cancel();
             outThread.join();
         }
-    } else {/* Restart, record new video */
-        r.UpdateSystemConfig();
+    } else { /* Restart, record new video */
+        fb.UpdateSystemConfig();
         if(r.IsBaseHwSwitch()) /* Overwrite config by HW switch */
             r.UpdateHwSwitch();
 
         cout << endl;
         cout << "*** Object tracking started ***" << endl;
 
-        if(r.IsVideoOutput())
-            outThread = thread(&VideoWriterThread, r.BaseType(), r.IsVideoOutputScreen(), r.IsVideoOutputFile(), r.IsVideoOutputRTP(), r.RTPRemoteHost(), videoWidth, videoHeight);
+        camera.Open();
+
+        if(fb.IsVideoOutput())
+            outThread = thread(&VideoWriterThread, r.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), fb.IsVideoOutputRTP(), fb.RTPRemoteHost(), camCfg.width, camCfg.height);
     }
 }
 
-void contour_moving_object(Mat & foregroundMask, vector<Rect> & roiRect, int y_offset = 0)
+static void contour_moving_object(Mat & foregroundMask, vector<Rect> & roiRect, int y_offset = 0)
 {
     uint32_t num_target = 0;
 
@@ -953,99 +1110,48 @@ void contour_moving_object(Mat & foregroundMask, vector<Rect> & roiRect, int y_o
 *
 */
 
+static bool bShutdown = false;
+static bool bPause = true;
+
+void sig_handler(int signo)
+{
+    if(signo == SIGINT) {
+        printf("SIGINT\n");
+        bShutdown = true;
+    } else if(signo == SIGHUP) {
+        printf("SIGHUP\n");
+        OnPushButton(f3xBase);
+    }
+}
+
 int main(int argc, char**argv)
 {
-    cuda::printShortCudaDeviceInfo(cuda::getDevice());
-    std::cout << cv::getBuildInformation() << std::endl;
-
-    f3xBase.SetupGPIO();
-    f3xBase.Open();
-    f3xBase.UpdateSystemConfig();
-    if(f3xBase.IsBaseHwSwitch()) /* Overwrite config by HW switch */
-        f3xBase.UpdateHwSwitch();
-
     if(signal(SIGINT, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGINT\n");
 
     if(signal(SIGHUP, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGHUP\n");
 
-    char gstStr[STR_SIZE];
+    cuda::printShortCudaDeviceInfo(cuda::getDevice());
+    std::cout << cv::getBuildInformation() << std::endl;
 
-    snprintf(gstStr, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
-    vector<pair<string, string> > cfg;
-    ParseConfigFile(gstStr, cfg);
+    f3xBase.UpdateSystemConfig();
+    if(f3xBase.IsBaseHwSwitch()) /* Overwrite config by HW switch */
+        f3xBase.UpdateHwSwitch();
+    f3xBase.SetupGPIO();
+    f3xBase.Open();
 
-    int wbmode = 0;
-    int tnr_mode = 1;
-    int tnr_strength = -1;
-    int ee_mode = 1;
-    int ee_strength = -1;
-    string gainrange; /* Default null */
-    string ispdigitalgainrange; /* Default null */
-    string exposuretimerange; /* Default null */
-    int exposurecompensation = 0;
-
-    cout << endl;
-    cout << "### Camera config" << endl; 
-    vector<pair<string, string> >::iterator it;
-    for (it=cfg.begin(); it!=cfg.end(); it++) {
-        cout << it->first << " = " << it->second << endl;
-        if(it->first == "wbmode")
-            wbmode = stoi(it->second);
-        else if(it->first == "tnr-mode")
-            tnr_mode = stoi(it->second);
-        else if(it->first == "tnr-strength")
-            tnr_strength = stoi(it->second);
-        else if(it->first == "ee-mode")
-            ee_mode = stoi(it->second);
-        else if(it->first == "ee-strength")
-            ee_strength = stoi(it->second);
-        else if(it->first == "gainrange")
-            gainrange = it->second;
-        else if(it->first == "ispdigitalgainrange")
-            ispdigitalgainrange = it->second;
-        else if(it->first == "exposuretimerange")
-            exposuretimerange = it->second;
-        else if(it->first == "exposurecompensation")
-            exposurecompensation = stoi(it->second);
-    }
-    cout << endl;
-
-/* Reference : nvarguscamerasrc.txt */
-
-/* export GST_DEBUG=2 to show debug message */
-#if 0
-    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=0 ! \
-video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
-        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-#else
-    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
-video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
-        wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
-        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-#endif
-/*
-    snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video1 ! \
-        video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-        nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
-        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-*/
-    VideoCapture cap(gstStr, cv::CAP_GSTREAMER);
-
-    cout << endl;
-    cout << gstStr << endl;
-    cout << endl;
-
-    if(!cap.isOpened()) {
-        cout << endl;
-        cout << "!!! Could not open video" << endl;
+    camera.UpdateCameraConfig()
+    if(!camera.Open())
         return 1;
-    }
+
+    int cx = camera.width - 1;
+    int cy = (camera.height / 2) - 1;
+
+    camera.UpdateExposure();
 
     Mat foregroundMask;
+    Mat capFrame;
     Mat outFrame;
 
     cuda::GpuMat gpuForegroundMask;
@@ -1056,21 +1162,6 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 
     Tracker tracker;
     Target *primaryTarget = 0;
-
-    Mat frame, capFrame;
-    cuda::GpuMat gpuFrame;
-
-    while(1) {
-        if(cap.read(capFrame))
-            break;
-        else
-            usleep(10000);
-        if(bShutdown)
-            return 0;
-    }
-
-    int cx = capFrame.cols - 1;
-    int cy = (capFrame.rows / 2) - 1;
 
     cout << endl;
     cout << "### Press button to start object tracking !!!" << endl;
@@ -1089,7 +1180,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         unsigned int gv = f3xBase.PushButton();
         if(gv == 0 && vPushButton == 1) { /* Raising edge */
             if(loopCount >= 10) { /* Button debunce */
-                OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                OnPushButton(f3xBase);
                 loopCount = 0;
             }
         }
@@ -1103,12 +1194,12 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
                         uint8_t v = data[0] & 0x3f;
                         if(v == 0x00) { /* BaseA Off - 10xx xxx0 */
                             if(bPause == false) {
-                                OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                                OnPushButton(f3xBase);
                                 loopCount = 0;
                             }
                         } else if(v == 0x01) { /* BaseA On - 10xx xxx1 */
                             if(bPause == true) {
-                                OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                                OnPushButton(f3xBase);
                                 loopCount = 0;
                             }
                         }
@@ -1118,12 +1209,12 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
                         uint8_t v = data[0] & 0x3f;
                         if(v == 0x00) { /* BaseB Off - 11xx xxx0 */
                             if(bPause == false) {
-                                OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                                OnPushButton(f3xBase);
                                 loopCount = 0;
                             }
                         } else if(v == 0x01) { /* BaseB On - 11xx xxx1 */
                             if(bPause == true) {
-                                OnPushButton(f3xBase, capFrame.cols, capFrame.rows);
+                                OnPushButton(f3xBase);
                                 loopCount = 0;
                             }
                         }
@@ -1155,7 +1246,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
                 f3xBase.BlueLed(off);
         }
 
-        cap.read(capFrame);
+        camera.Read(capFrame);
 
         if(f3xBase.IsVideoOutputResult()) {
             if(f3xBase.IsVideoOutput()) {
@@ -1164,17 +1255,19 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             }
         }
 
-        /* Gray color space for whole region */
-
-        Mat roiFrame;
-        cvtColor(capFrame, frame, COLOR_BGR2GRAY);
         int erosion_size = 6;   
         Mat element = cv::getStructuringElement(cv::MORPH_RECT,
                           cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
                           cv::Point(-1, -1) ); /* Default anchor point */
 
-        erode(frame, frame, element);
-        gpuFrame.upload(frame);	
+        /* Gray color space for whole region */
+        
+        Mat grayFrame;
+        cvtColor(capFrame, grayFrame, COLOR_BGR2GRAY);
+        cuda::GpuMat gpuFrame;
+
+        erode(grayFrame, grayFrame, element);
+        gpuFrame.upload(grayFrame);	
 
         bsModel->apply(gpuFrame, gpuForegroundMask, -1);
 
@@ -1188,7 +1281,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 
         /* HSV color space Hue channel for bottom 1/3 region */
 
-        Mat hsvFrame;
+        Mat hsvFrame, roiFrame;
         int y_offset = capFrame.rows * 2 / 3;
         capFrame(Rect(0, y_offset, capFrame.cols, capFrame.rows - y_offset)).copyTo(roiFrame);
         cvtColor(roiFrame, hsvFrame, COLOR_BGR2HSV);
@@ -1273,8 +1366,6 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         t1 = high_resolution_clock::now();
     }
 
-    cap.release();
-
     f3xBase.GreenLed(off); /* Flash during frames */
     f3xBase.BlueLed(off); /* Flash during file save */
     f3xBase.RedLed(off); /* While object detected */
@@ -1287,6 +1378,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         }
     }
 
+    camera.Close();
     f3xBase.Close();
 
     cout << endl;
