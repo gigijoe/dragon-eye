@@ -898,11 +898,11 @@ public:
     string exposuretimerange; /* Default null */
     int exposurecompensation = 0;
     int exposurethreshold = 255;
-    int width, height;
+//    int width, height;
 
     Camera() : wbmode(0), tnr_mode(-1), tnr_strength(-1), ee_mode(1), ee_strength(-1), 
-        gainrange("1 16"), ispdigitalgainrange("1 8"), exposuretimerange("5000000 20000000"),
-        exposurecompensation(0), width(1280), height(720) {
+        gainrange("1 16"), ispdigitalgainrange("1 8"), exposuretimerange("5000000 10000000"),
+        exposurecompensation(0) {
     }
 
     bool Open() {
@@ -928,13 +928,11 @@ video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, fr
 nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
             CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 */
-        cap.open(gstStr, cv::CAP_GSTREAMER);
-
         cout << endl;
         cout << gstStr << endl;
         cout << endl;
 
-        if(!cap.isOpened()) {
+        if(!cap.open(gstStr, cv::CAP_GSTREAMER)) {
             cout << endl;
             cout << "!!! Could not open video" << endl;
             return false;
@@ -952,10 +950,10 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             cap.release();
             return false;
         }
-
+/*
         width = capFrame.cols;
         height = capFrame.rows;
-        
+*/        
         return true;
     }
 
@@ -1001,7 +999,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         cout << endl;
     }
 
-    void UpdateExposure() {
+    bool UpdateExposure() {
         const char *exposureTimeRange[5] = {
             "\"5000000 10000000\"",
             "\"3000000 8000000\"",
@@ -1022,7 +1020,15 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
                 wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposureTimeRange[i], exposurecompensation,
                 CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 
-            cap.open(gstStr, cv::CAP_GSTREAMER);
+            cout << endl;
+            cout << gstStr << endl;
+            cout << endl;
+
+            if(!cap.open(gstStr, cv::CAP_GSTREAMER)) {
+                cout << endl;
+                cout << "!!! Could not open video" << endl;
+                return false;
+            }
 
             Mat capFrame;
             int meanCount = 30;
@@ -1039,12 +1045,6 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             cap.release();
 
             //cout << "Exposure time range - " << exposureTimeRange[i] << " : Brightness - " << meanValue << endl;
-/*
-            if(meanValue <= exposurethreshold) {
-                exposuretimerange = exposureTimeRange[i];
-                break;
-            }
-*/
             exposure_brightness.push_back(make_pair(exposureTimeRange[i], meanValue));
         }
 
@@ -1053,6 +1053,15 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             cout << "Exposure time range - " << it->first << " : Brightness - " << it->second << endl;
         }
 
+        for (it=exposure_brightness.begin(); it!=exposure_brightness.end(); it++) {
+            if(it->second <= exposurethreshold) {
+                exposuretimerange = it->first;
+                cout << "Set exposure time range - " << it->first <<  endl;
+                break;
+            }
+        }
+
+        return true;
     }
 };
 
@@ -1097,7 +1106,7 @@ static void OnPushButton(F3xBase & fb)
         camera.Open();
 
         if(fb.IsVideoOutput())
-            outThread = thread(&VideoWriterThread, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), fb.IsVideoOutputRTP(), fb.RTPRemoteHost(), camera.width, camera.height);
+            outThread = thread(&VideoWriterThread, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), fb.IsVideoOutputRTP(), fb.RTPRemoteHost(), CAMERA_WIDTH, CAMERA_HEIGHT);
     }
 }
 
@@ -1155,6 +1164,13 @@ int main(int argc, char**argv)
     if(signal(SIGHUP, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGHUP\n");
 
+    ofstream pidfile(CONFIG_FILE_DIR"/dragon-eye.pid"); 
+    if(pidfile) {
+        pidfile << getpid();
+        pidfile.close();
+    } else
+        cout << "Error open " << CONFIG_FILE_DIR << "/dragon-eye.pid" << endl;
+
     cuda::printShortCudaDeviceInfo(cuda::getDevice());
     std::cout << cv::getBuildInformation() << std::endl;
 
@@ -1165,13 +1181,11 @@ int main(int argc, char**argv)
     f3xBase.Open();
 
     camera.UpdateCameraConfig();
-    if(!camera.Open())
+    if(!camera.UpdateExposure())
         return 1;
 
-    int cx = camera.width - 1;
-    int cy = (camera.height / 2) - 1;
-
-    camera.UpdateExposure();
+    int cx = CAMERA_WIDTH - 1;
+    int cy = (CAMERA_HEIGHT / 2) - 1;
 
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 32, false); /* background history count, varThreshold, shadow detection */
