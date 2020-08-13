@@ -5,6 +5,7 @@
 #include <opencv2/cudacodec.hpp>
 #include <opencv2/cudabgsegm.hpp>
 #include <opencv2/cudaobjdetect.hpp>
+#include <opencv2/cudafilters.hpp>
 
 #include <errno.h>
 #include <fcntl.h> 
@@ -38,10 +39,11 @@ extern "C" {
 }
 
 using std::chrono::high_resolution_clock;
+using std::chrono::steady_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
 
-using std::chrono::system_clock;
+//using std::chrono::system_clock;
 using std::chrono::seconds;
 
 //#define CAMERA_1080P
@@ -451,7 +453,7 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=fal
 
     videoWriterQueue.reset();
 
-    system_clock::time_point t1 = system_clock::now();
+    steady_clock::time_point t1 = steady_clock::now();
 
     try {
         while(1) {
@@ -463,7 +465,7 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=fal
             if(isVideoOutputRTP)
                 outRTP.write(frame);
             
-            system_clock::time_point t2 = system_clock::now();
+            steady_clock::time_point t2 = steady_clock::now();
             double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
 
             if(isVideoOutputFile && secs >= VIDEO_FILE_OUTPUT_DURATION)
@@ -937,7 +939,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             cout << "!!! Could not open video" << endl;
             return false;
         }
-
+/*
         int retryCount = 0;
         Mat capFrame;
         while(retryCount++ < 30) {
@@ -950,7 +952,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             cap.release();
             return false;
         }
-/*
+
         width = capFrame.cols;
         height = capFrame.rows;
 */        
@@ -1056,7 +1058,8 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         for (it=exposure_brightness.begin(); it!=exposure_brightness.end(); it++) {
             if(it->second <= exposurethreshold) {
                 exposuretimerange = it->first;
-                cout << "Set exposure time range - " << it->first <<  endl;
+                cout << endl;
+                cout << "### Set exposure time range - " << it->first <<  endl;
                 break;
             }
         }
@@ -1156,6 +1159,8 @@ void sig_handler(int signo)
 *
 */
 
+#define PID_FILE "/var/run/dragon-eye.pid"
+
 int main(int argc, char**argv)
 {
     if(signal(SIGINT, sig_handler) == SIG_ERR)
@@ -1164,12 +1169,12 @@ int main(int argc, char**argv)
     if(signal(SIGHUP, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGHUP\n");
 
-    ofstream pidfile(CONFIG_FILE_DIR"/dragon-eye.pid"); 
-    if(pidfile) {
-        pidfile << getpid();
-        pidfile.close();
+    ofstream pf(PID_FILE); 
+    if(pf) {
+        pf << getpid();
+        pf.close();
     } else
-        cout << "Error open " << CONFIG_FILE_DIR << "/dragon-eye.pid" << endl;
+        cout << "Error open " << PID_FILE << endl;
 
     cuda::printShortCudaDeviceInfo(cuda::getDevice());
     std::cout << cv::getBuildInformation() << std::endl;
@@ -1200,7 +1205,8 @@ int main(int argc, char**argv)
 
     double fps = 0;
 
-    high_resolution_clock::time_point t1(high_resolution_clock::now());
+    //high_resolution_clock::time_point t1(high_resolution_clock::now());
+    steady_clock::time_point t1(steady_clock::now());
 
     uint64_t loopCount = 0;
 
@@ -1393,13 +1399,15 @@ int main(int argc, char**argv)
             }
         }
 
-        high_resolution_clock::time_point t2(high_resolution_clock::now());
+//        high_resolution_clock::time_point t2(high_resolution_clock::now());
+        steady_clock::time_point t2(steady_clock::now());
         double dt_us(static_cast<double>(duration_cast<microseconds>(t2 - t1).count()));
         //std::cout << "FPS : " << fixed  <<  setprecision(2) << (1000000.0 / dt_us) << std::endl;
         fps = (1000000.0 / dt_us);
         std::cout << "FPS : " << fixed  << setprecision(2) <<  fps << std::endl;
 
-        t1 = high_resolution_clock::now();
+//        t1 = high_resolution_clock::now();
+        t1 = steady_clock::now();
     }
 
     f3xBase.GreenLed(off); /* Flash during frames */
