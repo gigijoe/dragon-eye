@@ -17,6 +17,11 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h> 
+
 #include <arpa/inet.h>
 
 using namespace cv;
@@ -370,9 +375,9 @@ void FrameQueue::reset()
 *
 */
 
-static FrameQueue videoWriterQueue;
+static FrameQueue videoOutputQueue;
 
-void VideoWriterThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, bool isVideoOutputRTP, const char *rtpRemoteHost, int width, int height)
+void VideoOutputThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, bool isVideoOutputRTP, const char *rtpRemoteHost, uint16_t rtpRemotePort, int width, int height)
 {    
     Size videoSize = Size((int)width,(int)height);
     char gstStr[STR_SIZE];
@@ -403,7 +408,7 @@ void VideoWriterThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVid
 #else /* NOT work, due to tee */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh265enc low-latency=1 control-rate=2 bitrate=4000000 ! \
+nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! \
 tee name=t \
 t. ! queue ! matroskamux ! filesink location=%s/%s%c%03d.mkv  \
 t. ! queue ! video/x-h265, stream-format=byte-stream ! h265parse ! rtph265pay mtu=1400 ! \
@@ -421,7 +426,7 @@ udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv ! video/x-raw(memory:NVMM) ! \
-nvoverlaysink sync=false -e ", 30);
+nvoverlaysink sync=false ", 30);
         outScreen.open(gstStr, VideoWriter::fourcc('I', '4', '2', '0'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
         cout << endl;
         cout << gstStr << endl;
@@ -429,20 +434,20 @@ nvoverlaysink sync=false -e ", 30);
         cout << "*** Start display video ***" << endl;
     }
 
-    if(isVideoOutputRTP) {
+    if(isVideoOutputRTP && rtpRemoteHost) {
 #undef MULTICAST_RTP
 #ifdef MULTICAST_RTP /* Multicast RTP does NOT work with wifi due to low speed ... */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh265enc low-latency=1 control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
-h265parse ! rtph265pay mtu=1400 ! udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
-            30);
+nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
+h265parse ! rtph265pay mtu=1400 ! udpsink host=224.1.1.1 port=%u auto-multicast=true sync=false async=false ",
+            30, rtpRemotePort);
 #else
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh265enc low-latency=1 control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
-h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=false ",
-            30, rtpRemoteHost);
+nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
+h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=%u sync=false async=false ",
+            30, rtpRemoteHost, rtpRemotePort);
 #endif
         outRTP.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
         cout << endl;
@@ -451,13 +456,13 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=fal
         cout << "*** Start RTP video ***" << endl;        
     }
 
-    videoWriterQueue.reset();
+    videoOutputQueue.reset();
 
     steady_clock::time_point t1 = steady_clock::now();
 
     try {
         while(1) {
-            Mat frame = videoWriterQueue.pop();
+            Mat frame = videoOutputQueue.pop();
             if(isVideoOutputFile)
                 outFile.write(frame);
             if(isVideoOutputScreen)
@@ -469,7 +474,7 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=fal
             double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
 
             if(isVideoOutputFile && secs >= VIDEO_FILE_OUTPUT_DURATION)
-                videoWriterQueue.cancel(); /* Reach duration limit, stop record video */
+                videoOutputQueue.cancel(); /* Reach duration limit, stop record video */
         }
     } catch (FrameQueue::cancelled & /*e*/) {
         // Nothing more to process, we're done
@@ -496,7 +501,7 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=5000 sync=false async=fal
 *
 */
 
-static bool ValidateIpAddress(const string &ipAddress)
+static bool IsValidateIpAddress(const string & ipAddress)
 {
     struct sockaddr_in sa;
     int result = inet_pton(AF_INET, ipAddress.c_str(), &(sa.sin_addr));
@@ -534,7 +539,7 @@ static size_t ParseConfigFile(char *file, vector<pair<string, string> > & cfg)
 
 class F3xBase {
 private:
-    int m_ttyFd;
+    int m_ttyFd, m_udpSocket;
     BaseType_t m_baseType;
     bool m_isBaseRemoteControl;
 
@@ -548,7 +553,10 @@ private:
     bool m_isVideoOutputRTP;
     bool m_isVideoOutputResult;
 
+    string m_udpRemoteHost;
+    uint16_t m_udpRemotePort;
     string m_rtpRemoteHost;
+    uint16_t m_rtpRemotePort;
 
     int SetupTTY(int fd, int speed, int parity) {
         struct termios tty;
@@ -590,7 +598,7 @@ private:
     }
 
 public:
-    F3xBase() : m_ttyFd(0), m_baseType(BASE_A), m_isBaseRemoteControl(false),
+    F3xBase() : m_ttyFd(0), m_udpSocket(0), m_baseType(BASE_A), m_isBaseRemoteControl(false),
         m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51),
         m_videoOutputScreenSwitch(gpio19), m_videoOutputFileSwitch(gpio20),
         m_baseSwitch(gpio12), m_videoOutputResultSwitch(gpio13), m_pushButton(gpio18),
@@ -598,7 +606,8 @@ public:
         m_isVideoOutputScreen(false), 
         m_isVideoOutputFile(false), 
         m_isVideoOutputRTP(false), 
-        m_isVideoOutputResult(false) {
+        m_isVideoOutputResult(false),
+        m_udpRemotePort(4999), m_rtpRemotePort(5000) {
     }
 
     void SetupGPIO() {
@@ -661,26 +670,83 @@ public:
     #endif
     }
 
-    int Open() {
-        const char *ttyName = "/dev/ttyTHS1";
-        //const char *ttyName = "/dev/ttyUSB0";
+    int OpenTty() { /* Try ttyUSB0 first then ttyTHS1 */
+        const char *ttyUSB0 = "/dev/ttyUSB0";
+        const char *ttyTHS1 = "/dev/ttyTHS1";
 
-        m_ttyFd = open (ttyName, O_RDWR | O_NOCTTY | O_SYNC);
+        m_ttyFd = open (ttyUSB0, O_RDWR | O_NOCTTY | O_SYNC);
         if(m_ttyFd) {
             SetupTTY(m_ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
-            printf("Open %s successful ...\n", ttyName);
-        } else
-            printf("Error %d opening %s: %s\n", errno, ttyName, strerror (errno));
+            printf("Open %s successful ...\n", ttyUSB0);
+        } else {
+            printf("Error %d opening %s: %s\n", errno, ttyUSB0, strerror (errno));
+            m_ttyFd = open (ttyTHS1, O_RDWR | O_NOCTTY | O_SYNC);
+            if(m_ttyFd) {
+                SetupTTY(m_ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
+                printf("Open %s successful ...\n", ttyTHS1);
+            }
+        }
 
         return m_ttyFd;
     }
 
-    void Close() {
-        if(m_ttyFd)
-            close(m_ttyFd);
+    int OpenUdpSocket() {
+        int sockfd;
+        struct sockaddr_in addr; 
+
+        if(m_udpRemoteHost.empty()) {
+            printf("Invalid UDP host !!!\n");
+            return 0;
+        }
+
+        sockfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if(sockfd < 0) {
+            printf("Error open UDP socket !!!\n");
+            return 0;
+        }
+
+        memset((char*) &(addr),0, sizeof((addr)));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        addr.sin_port = htons(m_udpRemotePort);
+
+        if(bind(sockfd,(struct sockaddr*)&addr, sizeof(addr)) != 0) {
+            switch(errno) {
+            case 0:
+                printf("Could not bind socket\n");
+            case EADDRINUSE:
+                printf("Port %u for receiving UDP is in use\n", m_udpRemotePort);
+                break;
+            case EADDRNOTAVAIL:
+                printf("Cannot assign requested address\n");
+                break;
+            default:
+                printf("Could not bind UDP receive port : Error %s\n", strerror(errno));
+                break;            
+            }
+            return 0;
+        }
+
+        m_udpSocket = sockfd;
+
+        printf("Open UDP socket successful ...\n");
+
+        return m_udpSocket;
     }
 
-    void Toggle(bool newTrigger) {
+    void CloseTty() {
+        if(m_ttyFd)
+            close(m_ttyFd);
+        m_ttyFd = 0;
+    }
+
+    void CloseUdpSocket() {
+        if(m_udpSocket)
+            close(m_udpSocket);
+        m_udpSocket = 0;
+    }
+
+    void TriggerTty(bool newTrigger) {
         static uint8_t serNo = 0x3f;
         uint8_t data[1];
 
@@ -695,12 +761,53 @@ public:
         if(m_baseType == BASE_A) {
             data[0] = (serNo & 0x3f);
             printf("BASE_A[%d]\r\n", serNo);
-            write(m_ttyFd, data, 1);
         } else if(m_baseType == BASE_B) {
             data[0] = (serNo & 0x3f) | 0x40;
             printf("BASE_B[%d]\r\n", serNo);
-            write(m_ttyFd, data, 1);
         }        
+        write(m_ttyFd, data, 1);
+    }
+
+    size_t WriteUdpSocket(uint8_t *data, size_t size) {
+        if(!m_udpSocket)
+            return 0;
+        struct sockaddr_in to;
+        int toLen = sizeof(to);
+        memset(&to, 0, toLen);
+        
+        struct hostent *server;
+        server = gethostbyname(m_udpRemoteHost.c_str());
+
+        to.sin_family = AF_INET;
+        to.sin_port = htons(m_udpRemotePort);
+        to.sin_addr = *((struct in_addr *)server->h_addr);
+        
+        //printf("Write to %s:%u ...\n", m_udpRemoteHost.c_str(), m_udpRemotePort);
+        
+        int s = sendto(m_udpSocket, data, size, 0,(struct sockaddr*)&to, toLen);
+
+        return s;
+    }
+
+    void TriggerUdpSocket(bool newTrigger) {
+        static uint8_t serNo = 0x3f;
+        uint8_t data[1];
+
+        if(!m_udpSocket)
+            return;
+
+        if(newTrigger) { /* It's NEW trigger */
+            if(++serNo > 0x3f)
+                serNo = 0;
+        }
+        if(m_baseType == BASE_A) {
+            data[0] = (serNo & 0x3f);
+            printf("BASE_A[%d]\r\n", serNo);            
+        } else if(m_baseType == BASE_B) {
+            data[0] = (serNo & 0x3f) | 0x40;
+            printf("BASE_B[%d]\r\n", serNo);
+        }        
+        WriteUdpSocket(data, 1);
     }
 
     void UpdateHwSwitch() {
@@ -772,7 +879,25 @@ public:
                     m_isBaseHwSwitch = true;
                 else
                     m_isBaseHwSwitch = false;
-            } else if(it->first == "base.trigger.reset") { /**/
+            } else if(it->first == "base.trigger.reset") { /* triggle then reset target */
+            } else if(it->first == "base.udp.remote.host") {
+                if(IsValidateIpAddress(it->second))
+                    m_udpRemoteHost = it->second;
+            } else if(it->first == "base.udp.remote.port") {
+                string & s = it->second;
+                if(::all_of(s.begin(), s.end(), ::isdigit))
+                    m_udpRemotePort = stoi(s);
+                else
+                    cout << "Invalid " << it->first << "=" << s << endl;
+            } else if(it->first == "base.rtp.remote.host") {
+                if(IsValidateIpAddress(it->second))
+                    m_rtpRemoteHost = it->second;
+            } else if(it->first == "base.rtp.remote.port") {
+                string & s = it->second;
+                if(::all_of(s.begin(), s.end(), ::isdigit))
+                    m_rtpRemotePort = stoi(s);
+                else
+                    cout << "Invalid " << it->first << "=" << s << endl;
             } else if(it->first == "video.output.screen") {
                 if(it->second == "yes" || it->second == "1")
                     m_isVideoOutputScreen = true;
@@ -793,9 +918,6 @@ public:
                     m_isVideoOutputResult = true;
                 else
                     m_isVideoOutputResult = false;
-            } else if(it->first == "rtp.remote.host") {
-                if(ValidateIpAddress(it->second))
-                    m_rtpRemoteHost = it->second;
             }
         }
     }
@@ -824,8 +946,24 @@ public:
         return m_isVideoOutputRTP;
     }
 
-    const char *RTPRemoteHost() {
+    const char *RtpRemoteHost() {
+        if(m_rtpRemoteHost.empty())
+            return 0;
         return m_rtpRemoteHost.c_str();
+    }
+
+    inline uint16_t RtpRemotePort() {
+        return m_rtpRemotePort;
+    }
+
+    const char *UdpRemoteHost() {
+        if(m_udpRemoteHost.empty())
+            return 0;
+        return m_udpRemoteHost.c_str();
+    }
+
+    inline uint16_t UdpRemotePort() {
+        return m_udpRemotePort;
     }
 
     inline bool IsVideoOutput() const {
@@ -836,7 +974,7 @@ public:
         return m_isVideoOutputResult;
     }
 
-    int Read(uint8_t *data, size_t size) {
+    int ReadTty(uint8_t *data, size_t size) {
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(m_ttyFd, &rfds);
@@ -851,6 +989,49 @@ public:
             int r = read(m_ttyFd, data, size); /* Receive trigger from f3f timer */
             if(r == size)
                 return 1;
+        }
+        return 0;
+    }
+
+    size_t ReadUdpSocket(uint8_t *data, size_t size) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(m_udpSocket, &rfds);
+
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 0;
+
+        if(data == 0 || size == 0)
+            return 0;
+
+        if(select(m_udpSocket+1, &rfds, NULL, NULL, &tv) > 0) {
+            struct sockaddr_in from;
+            int fromLen = sizeof(from);
+            size_t originalSize = size;
+
+            int r = recvfrom(m_udpSocket,
+                   data,
+                   originalSize,
+                   0,
+                   (struct sockaddr *)&from,
+                   (socklen_t*)&fromLen);
+
+            if(r > 0)
+                return r;
+            else if(r == -1) {
+                switch(errno) {
+                   case ENOTSOCK:
+                      printf("Error fd not a socket\n");
+                      break;
+                   case ECONNRESET:
+                      printf("Error connection reset - host not reachable\n");
+                      break;              
+                   default:
+                      printf("Socket Error : %d\n", errno);
+                      break;
+                }
+            }
         }
         return 0;
     }
@@ -915,19 +1096,19 @@ public:
 #if 0
     snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=0 ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
         CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 #else
         snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
             wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
             CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 #endif
 /*
         snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video1 ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
             CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 */
         cout << endl;
@@ -939,23 +1120,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             cout << "!!! Could not open video" << endl;
             return false;
         }
-/*
-        int retryCount = 0;
-        Mat capFrame;
-        while(retryCount++ < 30) {
-            if(cap.read(capFrame))
-                break;
-            else
-                usleep(10000);
-        }
-        if(retryCount >= 30) {
-            cap.release();
-            return false;
-        }
 
-        width = capFrame.cols;
-        height = capFrame.rows;
-*/        
         return true;
     }
 
@@ -1018,7 +1183,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         for(int i=0;i<5;i++) {
             snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true -e ", 
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
                 wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposureTimeRange[i], exposurecompensation,
                 CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 
@@ -1081,7 +1246,8 @@ static bool bPause = true;
 *
 */
 
-static thread outThread;
+static thread voThread;
+static thread udpThread;
 
 static void OnPushButton(F3xBase & fb) 
 {
@@ -1095,8 +1261,8 @@ static void OnPushButton(F3xBase & fb)
         //camera.Close();
         
         if(fb.IsVideoOutput()) {
-            videoWriterQueue.cancel();
-            outThread.join();
+            videoOutputQueue.cancel();
+            voThread.join();
         }
     } else { /* Restart, record new video */
         fb.UpdateSystemConfig();
@@ -1109,7 +1275,7 @@ static void OnPushButton(F3xBase & fb)
         camera.Open();
 
         if(fb.IsVideoOutput())
-            outThread = thread(&VideoWriterThread, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), fb.IsVideoOutputRTP(), fb.RTPRemoteHost(), CAMERA_WIDTH, CAMERA_HEIGHT);
+            voThread = thread(&VideoOutputThread, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), fb.IsVideoOutputRTP(), fb.RtpRemoteHost(), fb.RtpRemotePort(), CAMERA_WIDTH, CAMERA_HEIGHT);
     }
 }
 
@@ -1183,7 +1349,8 @@ int main(int argc, char**argv)
     if(f3xBase.IsBaseHwSwitch()) /* Overwrite config by HW switch */
         f3xBase.UpdateHwSwitch();
     f3xBase.SetupGPIO();
-    f3xBase.Open();
+    f3xBase.OpenTty();
+    f3xBase.OpenUdpSocket();
 
     camera.UpdateCameraConfig();
     if(!camera.UpdateExposure())
@@ -1226,7 +1393,7 @@ int main(int argc, char**argv)
 
         if(f3xBase.IsBaseRemoteControl()) {
             uint8_t data[1];
-            if(f3xBase.Read(data, 1)) {
+            if(f3xBase.ReadTty(data, 1)) {
                 if(f3xBase.BaseType() == BASE_A) {
                     if((data[0] & 0xc0) == 0x80) {
                         uint8_t v = data[0] & 0x3f;
@@ -1369,7 +1536,8 @@ int main(int argc, char**argv)
                             if(f3xBase.IsVideoOutput())
                                 line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
                         }
-                        f3xBase.Toggle(primaryTarget->TriggerCount() == 0);
+                        f3xBase.TriggerTty(primaryTarget->TriggerCount() == 0);
+                        f3xBase.TriggerUdpSocket(primaryTarget->TriggerCount() == 0);
                         f3xBase.RedLed(on);
                         f3xBase.Relay(on);
 
@@ -1393,9 +1561,9 @@ int main(int argc, char**argv)
                 const int thicknessScale = 1;  
                 Point textOrg(40, 40);
                 putText(outFrame, string(str), textOrg, fontFace, fontScale, Scalar(0, 255, 0), thicknessScale, cv::LINE_8);
-                videoWriterQueue.push(outFrame.clone());
+                videoOutputQueue.push(outFrame.clone());
             } else {
-                videoWriterQueue.push(capFrame.clone());
+                videoOutputQueue.push(capFrame.clone());
             }
         }
 
@@ -1417,13 +1585,14 @@ int main(int argc, char**argv)
 
     if(f3xBase.IsVideoOutput()) {
         if(bPause == false) {
-            videoWriterQueue.cancel();
-            outThread.join();
+            videoOutputQueue.cancel();
+            voThread.join();
         }
     }
 
     camera.Close();
-    f3xBase.Close();
+    f3xBase.CloseTty();
+    f3xBase.CloseUdpSocket();
 
     cout << endl;
     cout << "Finished ..." << endl;
