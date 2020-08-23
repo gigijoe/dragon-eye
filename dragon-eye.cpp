@@ -108,42 +108,36 @@ protected:
     unsigned long m_frameTick;
     uint8_t m_triggerCount;
 
+    vector< Rect > m_rects;
+    Point m_velocity;
+
 public:
     Target(Rect & roi, unsigned long frameTick) : m_courseLength(0), m_frameTick(frameTick), m_triggerCount(0) {
         m_rects.push_back(roi);
-        m_points.push_back(roi.tl());
         m_frameTick = frameTick;
     }
 
-    vector< Rect > m_rects;
-    vector< Point > m_points;
-    Point m_velocity;
-
     void Reset() {
         Rect r = m_rects.back();
-        Point p = r.tl();
         m_rects.clear();
-        m_points.clear();
-        m_rects.push_back(r);
-        m_points.push_back(p);
+        m_rects.push_back(r); /* New initial rect */
         m_triggerCount = 0;
         //m_frameTick =
-        //m_courseLength = 0; /* TODO : Do clear this ? */
+        //m_courseLength = 0; /* Do NOT reset course length so it can be trigger  */
     }
 
     void Update(Rect & roi, unsigned long frameTick) {
         if(m_rects.size() > 0)
             m_courseLength += norm(roi.tl() - m_rects.back().tl());
 
-        if(m_points.size() == 1) {
+        if(m_rects.size() == 1) {
             m_velocity.x = (roi.tl().x - m_rects.back().tl().x);
             m_velocity.y = (roi.tl().y - m_rects.back().tl().y);
-        } else if(m_points.size() > 1) {
+        } else if(m_rects.size() > 1) {
             m_velocity.x = (m_velocity.x + (roi.tl().x - m_rects.back().tl().x)) / 2;
             m_velocity.y = (m_velocity.y + (roi.tl().y - m_rects.back().tl().y)) / 2;
         }
         m_rects.push_back(roi);
-        m_points.push_back(roi.tl());
         m_frameTick = frameTick;
 #if 1
         if(m_triggerCount >= MAX_NUM_TRIGGER)
@@ -153,17 +147,22 @@ public:
 
     inline double CourseLength() { return m_courseLength; }
     inline unsigned long FrameTick() { return m_frameTick; }
-    inline Rect & LatestRect() { return m_rects.back(); }
-    inline Point & LatestPoint() { return m_points.back(); }
+    inline Rect & EndRect() { return m_rects.back(); }
+    inline uint32_t NumberOfRect() { return m_rects.size(); }
+    inline Point BeginPoint() { return m_rects[0].tl(); }
+    inline Point EndPoint() { return m_rects.back().tl(); }
+    inline Point GetPoint(uint32_t index) { return m_rects[index].tl(); }
     inline void Trigger() { m_triggerCount++; }
     inline uint8_t TriggerCount() { return m_triggerCount; }
     //inline Point & Velocity() { return m_velocity; }
     inline size_t TrackedCount() { return m_rects.size(); }
+
+    friend class Tracker;
 };
 
 static inline bool TargetSort(Target & a, Target & b)
 {
-    return a.LatestRect().area() > b.LatestRect().area();
+    return a.EndRect().area() > b.EndRect().area();
 }
 
 /*
@@ -233,7 +232,7 @@ public:
             if(i == roiRect.size()) { /* Target missing ... */
                 if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) { /* Target still missing for over X frames */
 #if 1            
-                    Point p = t->m_points.back();
+                    Point p = t->m_rects.back().tl();
                     printf("lost target : %d, %d\n", p.x, p.y);
 #endif
                     if(&(*t) == m_primaryTarget)
@@ -1517,19 +1516,19 @@ int main(int argc, char**argv)
         if(primaryTarget) {
             if(f3xBase.IsVideoOutputResult()) {
                 if(f3xBase.IsVideoOutput()) {
-                    Rect r = primaryTarget->m_rects.back();
+                    Rect r = primaryTarget->EndRect();
                     rectangle(outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0);
-                    if(primaryTarget->m_points.size() > 1) { /* Minimum 2 points ... */
-                        for(int i=0;i<primaryTarget->m_points.size()-1;i++) {
-                            line(outFrame, primaryTarget->m_points[i], primaryTarget->m_points[i+1], Scalar(0, 255, 255), 1);
+                    if(primaryTarget->NumberOfRect() > 1) { /* Minimum 2 points ... */
+                        for(int i=0;i<primaryTarget->NumberOfRect()-1;i++) {
+                            line(outFrame, primaryTarget->GetPoint(i), primaryTarget->GetPoint(i+1), Scalar(0, 255, 255), 1);
                         }
                     }
                 }
             }
             if(primaryTarget->CourseLength() > MIN_COURSE_LENGTH && 
                     primaryTarget->TrackedCount() > MIN_TARGET_TRACKED_COUNT) {
-                if((primaryTarget->m_points[0].y > cy && primaryTarget->LatestPoint().y <= cy) ||
-                    (primaryTarget->m_points[0].y < cy && primaryTarget->LatestPoint().y >= cy)) {
+                if((primaryTarget->BeginPoint().y > cy && primaryTarget->EndPoint().y <= cy) ||
+                    (primaryTarget->BeginPoint().y < cy && primaryTarget->EndPoint().y >= cy)) {
 
                     if(primaryTarget->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
                         if(f3xBase.IsVideoOutputResult()) {
