@@ -1357,12 +1357,17 @@ int main(int argc, char**argv)
 
     int cx = CAMERA_WIDTH - 1;
     int cy = (CAMERA_HEIGHT / 2) - 1;
-
+#if 0 /* TODO : For opencv-4.1.0 */
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 32, false); /* background history count, varThreshold, shadow detection */
     Ptr<cuda::Filter> gaussianFilter = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 3.5);
     Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
-
+#else /* TODO : For opencv 4.4.0 */
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
+    Ptr<cuda::Filter> gaussianFilter = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
+    Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
+#endif
     Tracker tracker;
     Target *primaryTarget = 0;
 
