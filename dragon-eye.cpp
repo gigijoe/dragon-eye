@@ -1198,6 +1198,11 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 
             Mat capFrame;
             int meanCount = 30;
+            while(meanCount-- > 0) { /* Drop first 30 frames */
+                cap.read(capFrame);
+            }
+
+            meanCount = 3;
             float meanValue = 0;
             while(meanCount-- > 0) {
                 cap.read(capFrame);
@@ -1206,7 +1211,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
                 Scalar v = mean(grayFrame);
                 meanValue += v.val[0];
             }
-            meanValue /= 30;
+            meanValue /= 3;
             
             cap.release();
 
