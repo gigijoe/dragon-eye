@@ -71,7 +71,7 @@ using std::chrono::seconds;
     #define MAX_TARGET_HEIGHT 320
 #endif
 
-#define MAX_NUM_TARGET               3      /* Maximum targets to tracing */
+#define MAX_NUM_TARGET               6      /* Maximum targets to tracing */
 #define MAX_NUM_TRIGGER              4      /* Maximum number of RF trigger after detection of cross line */
 #define MAX_NUM_FRAME_MISSING_TARGET 10     /* Maximum number of frames to keep tracing lost target */
 
@@ -145,6 +145,38 @@ public:
 #endif
     }
 
+    int DotProduct(Point p) {
+        size_t i = m_rects.size();
+        if(i < 2)
+            return 0;
+        i--;
+        Point v[2];
+        v[0].x = p.x - m_rects[i].tl().x;
+        v[0].y = p.y - m_rects[i].tl().y;
+        v[1].x = m_rects[i].tl().x - m_rects[i-1].tl().x;
+        v[1].y = m_rects[i].tl().y - m_rects[i-1].tl().y;
+        int dp = v[0].x * v[1].x + v[0].y * v[1].y;
+        return dp;
+    }
+
+    double CosTheta(Point p) {
+        size_t i = m_rects.size();
+        if(i < 2)
+            return 0;
+        i--;
+        Point v[2];
+        v[0].x = p.x - m_rects[i].tl().x;
+        v[0].y = p.y - m_rects[i].tl().y;
+        v[1].x = m_rects[i].tl().x - m_rects[i-1].tl().x;
+        v[1].y = m_rects[i].tl().y - m_rects[i-1].tl().y;
+        double dp = v[0].x * v[1].x + v[0].y * v[1].y;
+
+        /* A.B = |A||B|cos() */
+        /* cos() = A.B / |A||B| */
+
+        return dp / (sqrt((v[0].x * v[0].x) + (v[0].y * v[0].y)) * sqrt((v[1].x * v[1].x) + (v[1].y * v[1].y)));
+    }
+
     inline double CourseLength() { return m_courseLength; }
     inline unsigned long FrameTick() { return m_frameTick; }
     inline Rect & EndRect() { return m_rects.back(); }
@@ -187,21 +219,27 @@ public:
             int i;
             for(i=0; i<roiRect.size(); i++) {
                 Rect r = t->m_rects.back();
-                if((r & roiRect[i]).area() > 0) /* Target tracked ... */
-                    break;                
+                if((r & roiRect[i]).area() > 0) { /* Target tracked ... */
+                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+                        break;
+                }
 
                 unsigned long f = m_frameTick - t->FrameTick();
                 r.x += t->m_velocity.x * f;
                 r.y += t->m_velocity.y * f;
-                if((r & roiRect[i]).area() > 0) /* Target tracked with velocity ... */
-                    break;
+                if((r & roiRect[i]).area() > 0) { /* Target tracked with velocity ... */
+                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+                        break;
+                }
 #if 0
                 if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with velocity and Euclidean distance ... */
                     break;
 #endif
                 r = t->m_rects.back();
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with Euclidean distance ... */
-                    break;
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) { /* Target tracked with Euclidean distance ... */
+                    if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+                        break;
+                }
             }
             if(i != roiRect.size()) { /* Primary Target tracked */
                 t->Update(roiRect[i], m_frameTick);
@@ -213,21 +251,27 @@ public:
             int i;
             for(i=0; i<roiRect.size(); i++) {
                 Rect r = t->m_rects.back();
-                if((r & roiRect[i]).area() > 0) /* Target tracked ... */
-                    break;                
+                if((r & roiRect[i]).area() > 0) { /* Target tracked ... */
+                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+                        break;
+                }
 
                 unsigned long f = m_frameTick - t->FrameTick();
                 r.x += t->m_velocity.x * f;
                 r.y += t->m_velocity.y * f;
-                if((r & roiRect[i]).area() > 0) /* Target tracked with velocity ... */
-                    break;
+                if((r & roiRect[i]).area() > 0) { /* Target tracked with velocity ... */
+                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+                        break;
+                }
 #if 0
                 if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with velocity and Euclidean distance ... */
                     break;
 #endif
                 r = t->m_rects.back();
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with Euclidean distance ... */
-                    break;
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) { /* Target tracked with Euclidean distance ... */
+                    if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+                        break;
+                }
             }
             if(i == roiRect.size()) { /* Target missing ... */
                 if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) { /* Target still missing for over X frames */
@@ -249,21 +293,27 @@ public:
             list< Target >::iterator t;
             for(t=m_targets.begin();t!=m_targets.end();t++) {
                 Rect r = t->m_rects.back();
-                if((r & roiRect[i]).area() > 0) /* Next step tracked ... */
-                    break;
+                if((r & roiRect[i]).area() > 0) { /* Next step tracked ... */
+                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+                        break;
+                }
 
                 unsigned long f = m_frameTick - t->FrameTick();
                 r.x += t->m_velocity.x * f;
                 r.y += t->m_velocity.y * f;
-                if((r & roiRect[i]).area() > 0) /* Next step tracked with velocity ... */
-                    break;
+                if((r & roiRect[i]).area() > 0) { /* Next step tracked with velocity ... */
+                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+                        break;
+                }
 #if 0
                 if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with velocity and Euclidean distance ... */
                     break;
 #endif
                 r = t->m_rects.back();
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with Euclidean distance ... */                   
-                    break;
+                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) { /* Target tracked with Euclidean distance ... */                   
+                    if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+                        break;
+                }
             }
             if(t == m_targets.end()) { /* New target */
 #if 0
@@ -288,22 +338,7 @@ public:
         }
     }
 
-    Target *PrimaryTarget() {
-//        if(m_targets.size() == 0)
-//            return 0;
-
-//        m_targets.sort(TargetSort);
-#if 0
-        list< Target >::iterator t;
-        for(t=m_targets.begin();t!=m_targets.end();t++) {
-            if(t->ArcLength() > 320)
-                return &(*t);
-        }
-        return 0;
-#else
-        return m_primaryTarget;
-#endif
-    }
+    inline Target *PrimaryTarget() { return m_primaryTarget; }
 };
 
 /*
@@ -1261,8 +1296,9 @@ static void OnPushButton(F3xBase & fb)
         cout << endl;
         cout << "*** Object tracking stoped ***" << endl;
 
+        fb.GreenLed(off);
         camera.UpdateExposure();
-        //camera.Close();
+        fb.GreenLed(on);
         
         if(fb.IsVideoOutput()) {
             videoOutputQueue.cancel();
@@ -1283,7 +1319,7 @@ static void OnPushButton(F3xBase & fb)
     }
 }
 
-static void contour_moving_object(Mat & foregroundMask, vector<Rect> & roiRect, int y_offset = 0)
+static void contour_moving_object(Mat & frame, Mat & foregroundMask, vector<Rect> & roiRect, int y_offset = 0)
 {
     uint32_t num_target = 0;
 
@@ -1302,12 +1338,52 @@ static void contour_moving_object(Mat & foregroundMask, vector<Rect> & roiRect, 
             boundRect[i].height > MIN_TARGET_HEIGHT &&
             boundRect[i].width <= MAX_TARGET_WIDTH && 
             boundRect[i].height <= MAX_TARGET_HEIGHT) {
+#if 1
+                double minVal; 
+                double maxVal; 
+                Point minLoc; 
+                Point maxLoc;
+
+                Mat roiFrame = frame(boundRect[i]);
+                minMaxLoc(roiFrame, &minVal, &maxVal, &minLoc, &maxLoc ); 
+                /* If difference of max and min value of ROI rect is too small then it could be noise such as cloud or sea */
+                if((maxVal - minVal) < 24)
+                    continue; /* Too small, drop it. */
+#endif
                 boundRect[i].y += y_offset;
                 roiRect.push_back(boundRect[i]);
                 if(++num_target >= MAX_NUM_TARGET)
                     break;
         }
     }    
+}
+
+void extract_moving_object(Mat & frame, Mat & element, Ptr<cuda::Filter> & erodeFilter, Ptr<cuda::Filter> & gaussianFilter, 
+    Ptr<cuda::BackgroundSubtractorMOG2> & bsModel, vector<Rect> & roiRect, int y_offset = 0)
+{
+    Mat foregroundMask;
+    cuda::GpuMat gpuFrame;
+    cuda::GpuMat gpuForegroundMask;
+#if 0 /* Very poor performance ... Running by CPU is 10 times quick */
+    gpuFrame.upload(frame);
+    erodeFilter->apply(gpuFrame, gpuFrame);
+#else
+    erode(frame, frame, element);
+    gpuFrame.upload(frame);
+#endif    
+    // pass the frame to background bsGrayModel
+    bsModel->apply(gpuFrame, gpuForegroundMask, -1);
+    gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
+    //cuda::threshold(gpuForegroundMask, gpuForegroundMask, 10.0, 255.0, THRESH_BINARY);
+#if 0 /* Very poor performance ... Running by CPU is 10 times quick */
+    erodeFilter->apply(gpuForegroundMask, gpuForegroundMask);
+    gpuForegroundMask.download(foregroundMask);
+#else
+    gpuForegroundMask.download(foregroundMask);
+    erode(foregroundMask, foregroundMask, element);
+#endif
+
+    contour_moving_object(frame, foregroundMask, roiRect, y_offset);
 }
 
 /*
@@ -1362,15 +1438,24 @@ int main(int argc, char**argv)
 
     int cx = CAMERA_WIDTH - 1;
     int cy = (CAMERA_HEIGHT / 2) - 1;
-#if 0 /* TODO : For opencv-4.1.0 */
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 32, false); /* background history count, varThreshold, shadow detection */
-    Ptr<cuda::Filter> gaussianFilter = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 3.5);
-    Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
+
+    int erosion_size = 3;   
+    Mat element = cv::getStructuringElement(cv::MORPH_RECT,
+                        cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
+                        cv::Point(-1, -1) ); /* Default anchor point */
+
+    Ptr<cuda::Filter> erodeFilter1 = cuda::createMorphologyFilter(MORPH_ERODE, CV_8UC1, element);
+    Ptr<cuda::Filter> erodeFilter2 = cuda::createMorphologyFilter(MORPH_ERODE, CV_8UC1, element);
+
+#if 1 /* TODO : For opencv-4.1.0 */
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel1 = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
+    Ptr<cuda::Filter> gaussianFilter1 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 0);
+    Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 0);
 #else /* TODO : For opencv 4.4.0 */
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel1 = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
-    Ptr<cuda::Filter> gaussianFilter = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
+    Ptr<cuda::Filter> gaussianFilter1 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
     Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
 #endif
     Tracker tracker;
@@ -1442,7 +1527,7 @@ int main(int argc, char**argv)
         if(bPause) {
             f3xBase.RedLed(off);
             f3xBase.Relay(off);
-            f3xBase.GreenLed(on);
+            f3xBase.GreenLed(on); /* On while pause */
             if(f3xBase.IsVideoOutputFile())
                 f3xBase.BlueLed(on);
 
@@ -1471,32 +1556,32 @@ int main(int argc, char**argv)
             }
         }
 
-        int erosion_size = 6;   
-        Mat element = cv::getStructuringElement(cv::MORPH_RECT,
-                          cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
-                          cv::Point(-1, -1) ); /* Default anchor point */
-
         /* Gray color space for whole region */
         
         Mat grayFrame;
         cvtColor(capFrame, grayFrame, COLOR_BGR2GRAY);
+#if 0        
         cuda::GpuMat gpuFrame;
 
         erode(grayFrame, grayFrame, element);
         gpuFrame.upload(grayFrame);	
 
         cuda::GpuMat gpuForegroundMask;
-        bsModel->apply(gpuFrame, gpuForegroundMask, -1);
+        bsModel1->apply(gpuFrame, gpuForegroundMask, -1);
 
         Mat foregroundMask;
-        gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
+        gaussianFilter1->apply(gpuForegroundMask, gpuForegroundMask);
         gpuForegroundMask.download(foregroundMask);
         erode(foregroundMask, foregroundMask, element);
 
         vector<Rect> roiRect;
 
         contour_moving_object(foregroundMask, roiRect);
-
+#else
+//printf("%s:%d\n", __PRETTY_FUNCTION__, __LINE__);
+        vector<Rect> roiRect;
+        extract_moving_object(grayFrame, element, erodeFilter1, gaussianFilter1, bsModel1, roiRect);
+#endif
         /* HSV color space Hue channel for bottom 1/3 region */
 
         Mat hsvFrame, roiFrame;
@@ -1505,7 +1590,7 @@ int main(int argc, char**argv)
         cvtColor(roiFrame, hsvFrame, COLOR_BGR2HSV);
         Mat hsvCh[3];
         split(hsvFrame, hsvCh);
-
+#if 0
         erode(hsvCh[0], hsvCh[0], element);
         gpuFrame.upload(hsvCh[0]); 
 
@@ -1516,7 +1601,9 @@ int main(int argc, char**argv)
         erode(foregroundMask, foregroundMask, element);
 
         contour_moving_object(foregroundMask, roiRect, y_offset);
-
+#else
+        extract_moving_object(hsvCh[0], element, erodeFilter2, gaussianFilter2, bsModel2, roiRect, y_offset);
+#endif
         tracker.Update(roiRect);
 
         f3xBase.RedLed(off);
@@ -1557,7 +1644,7 @@ int main(int argc, char**argv)
         }
 /*
         Mat background;
-        bsModel->getBackgroundImage(background);
+        bsModel1->getBackgroundImage(background);
         if (!background.empty())
             imshow("mean background image", background );
 */
@@ -1599,9 +1686,10 @@ int main(int argc, char**argv)
         }
     }
 
-    camera.Close();
     f3xBase.CloseTty();
     f3xBase.CloseUdpSocket();
+
+    camera.Close();
 
     cout << endl;
     cout << "Finished ..." << endl;
