@@ -1209,6 +1209,9 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             "\"250000 1000000\""
         };
 
+        if(exposurethreshold >= 255)
+            return true;
+
         if(cap.isOpened())
             cap.release();
 
@@ -1347,13 +1350,20 @@ static void contour_moving_object(Mat & frame, Mat & foregroundMask, vector<Rect
                 Mat roiFrame = frame(boundRect[i]);
                 minMaxLoc(roiFrame, &minVal, &maxVal, &minLoc, &maxLoc ); 
                 /* If difference of max and min value of ROI rect is too small then it could be noise such as cloud or sea */
-                if((maxVal - minVal) < 24)
+                if((maxVal - minVal) < 32)
                     continue; /* Too small, drop it. */
 #endif
                 boundRect[i].y += y_offset;
                 roiRect.push_back(boundRect[i]);
+#if 1 /* Anti shark ... */
+                if(roiRect.size() > 16) {
+                    roiRect.clear();
+                    break;
+                }
+#else
                 if(++num_target >= MAX_NUM_TARGET)
                     break;
+#endif
         }
     }    
 }
@@ -1368,12 +1378,12 @@ void extract_moving_object(Mat & frame, Mat & element, Ptr<cuda::Filter> & erode
     gpuFrame.upload(frame);
     erodeFilter->apply(gpuFrame, gpuFrame);
 #else
-    erode(frame, frame, element);
+    //erode(frame, frame, element);
     gpuFrame.upload(frame);
 #endif    
+    gaussianFilter->apply(gpuFrame, gpuFrame);
     // pass the frame to background bsGrayModel
     bsModel->apply(gpuFrame, gpuForegroundMask, -1);
-    gaussianFilter->apply(gpuForegroundMask, gpuForegroundMask);
     //cuda::threshold(gpuForegroundMask, gpuForegroundMask, 10.0, 255.0, THRESH_BINARY);
 #if 0 /* Very poor performance ... Running by CPU is 10 times quick */
     erodeFilter->apply(gpuForegroundMask, gpuForegroundMask);
@@ -1439,7 +1449,7 @@ int main(int argc, char**argv)
     int cx = CAMERA_WIDTH - 1;
     int cy = (CAMERA_HEIGHT / 2) - 1;
 
-    int erosion_size = 3;   
+    int erosion_size = 2;   
     Mat element = cv::getStructuringElement(cv::MORPH_RECT,
                         cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
                         cv::Point(-1, -1) ); /* Default anchor point */
@@ -1450,8 +1460,8 @@ int main(int argc, char**argv)
 #if 1 /* TODO : For opencv-4.1.0 */
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel1 = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 16, false); /* background history count, varThreshold, shadow detection */
-    Ptr<cuda::Filter> gaussianFilter1 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 0);
-    Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 0);
+    Ptr<cuda::Filter> gaussianFilter1 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 3.0);
+    Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 3.0);
 #else /* TODO : For opencv 4.4.0 */
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel1 = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
     Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
