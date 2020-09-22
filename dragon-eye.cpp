@@ -73,7 +73,7 @@ using std::chrono::seconds;
 
 #define MAX_NUM_TARGET               6      /* Maximum targets to tracing */
 #define MAX_NUM_TRIGGER              4      /* Maximum number of RF trigger after detection of cross line */
-#define MAX_NUM_FRAME_MISSING_TARGET 10     /* Maximum number of frames to keep tracing lost target */
+#define MAX_NUM_FRAME_MISSING_TARGET 6     /* Maximum number of frames to keep tracing lost target */
 
 #define MIN_COURSE_LENGTH            120    /* Minimum course length of RF trigger after detection of cross line */
 #define MIN_TARGET_TRACKED_COUNT     3      /* Minimum target tracked count of RF trigger after detection of cross line */
@@ -109,7 +109,12 @@ protected:
     uint8_t m_triggerCount;
 
     vector< Rect > m_rects;
+    vector< Point > m_vectors;
     Point m_velocity;
+
+    Point center(Rect & r) {
+        return Point(r.tl().x + (r.width / 2), r.tl().y + (r.height / 2));
+    }
 
 public:
     Target(Rect & roi, unsigned long frameTick) : m_courseLength(0), m_frameTick(frameTick), m_triggerCount(0) {
@@ -137,6 +142,10 @@ public:
             m_velocity.x = (m_velocity.x + (roi.tl().x - m_rects.back().tl().x)) / 2;
             m_velocity.y = (m_velocity.y + (roi.tl().y - m_rects.back().tl().y)) / 2;
         }
+        if(m_rects.size() >= 1) {
+            Point p = roi.tl() - m_rects.back().tl();
+            m_vectors.push_back(p);
+        }
         m_rects.push_back(roi);
         m_frameTick = frameTick;
 #if 1
@@ -159,31 +168,34 @@ public:
         return dp;
     }
 
-    double CosTheta(Point p) {
+    double CosineAngle(Point p) {
         size_t i = m_rects.size();
         if(i < 2)
             return 0;
+
         i--;
-        Point v[2];
-        v[0].x = p.x - m_rects[i].tl().x;
-        v[0].y = p.y - m_rects[i].tl().y;
-        v[1].x = m_rects[i].tl().x - m_rects[i-1].tl().x;
-        v[1].y = m_rects[i].tl().y - m_rects[i-1].tl().y;
-        double dp = v[0].x * v[1].x + v[0].y * v[1].y;
+        Point v1, v2;
+        v1.x = p.x - m_rects[i].tl().x;
+        v1.y = p.y - m_rects[i].tl().y;
+        v2.x = m_rects[i].tl().x - m_rects[i-1].tl().x;
+        v2.y = m_rects[i].tl().y - m_rects[i-1].tl().y;
 
         /* A.B = |A||B|cos() */
         /* cos() = A.B / |A||B| */
 
-        return dp / (sqrt((v[0].x * v[0].x) + (v[0].y * v[0].y)) * sqrt((v[1].x * v[1].x) + (v[1].y * v[1].y)));
+        return v1.dot(v2) / (norm(v1) * norm(v1));
     }
 
     inline double CourseLength() { return m_courseLength; }
     inline unsigned long FrameTick() { return m_frameTick; }
-    inline Rect & EndRect() { return m_rects.back(); }
-    inline uint32_t NumberOfRect() { return m_rects.size(); }
+    inline Rect & LastRect() { return m_rects.back(); }
+#if 0    
     inline Point BeginPoint() { return m_rects[0].tl(); }
     inline Point EndPoint() { return m_rects.back().tl(); }
-    inline Point GetPoint(uint32_t index) { return m_rects[index].tl(); }
+#else
+    inline Point BeginPoint() { return center(m_rects[0]); }
+    inline Point EndPoint() { return center(m_rects.back()); }
+#endif    
     inline void Trigger() { m_triggerCount++; }
     inline uint8_t TriggerCount() { return m_triggerCount; }
     //inline Point & Velocity() { return m_velocity; }
@@ -194,7 +206,7 @@ public:
 
 static inline bool TargetSort(Target & a, Target & b)
 {
-    return a.EndRect().area() > b.EndRect().area();
+    return a.LastRect().area() > b.LastRect().area();
 }
 
 /*
@@ -212,7 +224,7 @@ public:
     Tracker() : m_frameTick(0), m_primaryTarget(0) {}
 
     void Update(vector< Rect > & roiRect) {
-        const int euclidean_distance = 240;
+        const int euclidean_distance = 120;
 
         if(m_primaryTarget) {
             Target *t = m_primaryTarget;
@@ -274,7 +286,18 @@ public:
                 }
             }
             if(i == roiRect.size()) { /* Target missing ... */
-                if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) { /* Target still missing for over X frames */
+                bool ignoreMissingTarget = false;
+                if(t->m_rects.size() <= MAX_NUM_FRAME_MISSING_TARGET) { 
+                    for(int j=0;j<t->m_vectors.size();j++) {
+                        Point p = t->m_vectors[j];
+                        if(p.x == 0 && p.y == 0) { /* With none moving behavior. Maybe fake signal ... */
+                            ignoreMissingTarget = true;
+                            break;
+                        }
+                    }
+                }
+                if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET ||
+                    ignoreMissingTarget) { /* Target still missing for over X frames */
 #if 1            
                     Point p = t->m_rects.back().tl();
                     printf("lost target : %d, %d\n", p.x, p.y);
@@ -339,6 +362,19 @@ public:
     }
 
     inline Target *PrimaryTarget() { return m_primaryTarget; }
+
+    void DrawPrimaryTarget(Mat & outFrame) {
+        Rect r = m_primaryTarget->LastRect();
+        rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
+
+        if(m_primaryTarget->m_rects.size() > 1) { /* Minimum 2 points ... */
+            for(int i=0;i<m_primaryTarget->m_rects.size()-1;i++) {
+                Point p0 = m_primaryTarget->m_rects[i].tl();
+                Point p1 = m_primaryTarget->m_rects[i+1].tl();
+                line(outFrame, p0, p1, Scalar(0, 0, 255), 1);
+            }
+        }        
+    }
 };
 
 /*
@@ -1027,46 +1063,53 @@ public:
         return 0;
     }
 
-    size_t ReadUdpSocket(uint8_t *data, size_t size) {
+    size_t ReadUdpSocket(uint8_t *data, size_t size, unsigned int timeoutMs) {
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(m_udpSocket, &rfds);
 
         struct timeval tv;
         tv.tv_sec = 0;
-        tv.tv_usec = 0;
+        tv.tv_usec = timeoutMs * 1000;
 
         if(data == 0 || size == 0)
             return 0;
 
-        if(select(m_udpSocket+1, &rfds, NULL, NULL, &tv) > 0) {
-            struct sockaddr_in from;
-            int fromLen = sizeof(from);
-            size_t originalSize = size;
+        if(select(m_udpSocket+1, &rfds, NULL, NULL, &tv) <= 0)
+            return 0; /* timeout */ 
 
-            int r = recvfrom(m_udpSocket,
-                   data,
-                   originalSize,
-                   0,
-                   (struct sockaddr *)&from,
-                   (socklen_t*)&fromLen);
-
-            if(r > 0)
-                return r;
-            else if(r == -1) {
-                switch(errno) {
-                   case ENOTSOCK:
-                      printf("Error fd not a socket\n");
-                      break;
-                   case ECONNRESET:
-                      printf("Error connection reset - host not reachable\n");
-                      break;              
-                   default:
-                      printf("Socket Error : %d\n", errno);
-                      break;
-                }
+        if(FD_ISSET(m_udpSocket, &rfds) <= 0)
+            return 0;
+        
+        struct sockaddr_in from;
+        int fromLen = sizeof(from);
+        size_t originalSize = size;
+#if 1
+        int r = recvfrom(m_udpSocket,
+               data,
+               originalSize,
+               0,
+               (struct sockaddr *)&from,
+               (socklen_t*)&fromLen);
+#else
+        int r = recv(m_udpSocket, data, originalSize, 0);
+#endif
+        if(r > 0)
+            return r;
+        else if(r == -1) {
+            switch(errno) {
+               case ENOTSOCK:
+                  printf("Error fd not a socket\n");
+                  break;
+               case ECONNRESET:
+                  printf("Error connection reset - host not reachable\n");
+                  break;              
+               default:
+                  printf("Socket Error : %d\n", errno);
+                  break;
             }
         }
+        
         return 0;
     }
 
@@ -1322,85 +1365,82 @@ static void OnPushButton(F3xBase & fb)
     }
 }
 
-static void contour_moving_object(Mat & frame, Mat & foregroundMask, vector<Rect> & roiRect, int y_offset = 0)
+static void contour_moving_object(Mat & frame, Mat & foregroundFrame, vector<Rect> & roiRect, int y_offset = 0)
 {
     uint32_t num_target = 0;
 
     vector< vector<Point> > contours;
     vector< Vec4i > hierarchy;
-//  findContours(foregroundMask, contours, hierarchy, RETR_TREE, CHAIN_APPROX_NONE);
-    findContours(foregroundMask, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+//  findContours(foregroundFrame, contours, hierarchy, RETR_TREE, CHAIN_APPROX_NONE);
+    findContours(foregroundFrame, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
     sort(contours.begin(), contours.end(), ContoursSort); /* Contours sort by area, controus[0] is largest */
 
     vector<Rect> boundRect( contours.size() );
     for(int i=0; i<contours.size(); i++) {
-        approxPolyDP( Mat(contours[i]), contours[i], 3, true );
+        //approxPolyDP( Mat(contours[i]), contours[i], 3, true );
         boundRect[i] = boundingRect( Mat(contours[i]) );
         //drawContours(contoursImg, contours, i, color, 2, 8, hierarchy);
-        if(boundRect[i].width > MIN_TARGET_WIDTH && 
-            boundRect[i].height > MIN_TARGET_HEIGHT &&
-            boundRect[i].width <= MAX_TARGET_WIDTH && 
-            boundRect[i].height <= MAX_TARGET_HEIGHT) {
-#if 1
-                double minVal; 
-                double maxVal; 
-                Point minLoc; 
-                Point maxLoc;
+        if(boundRect[i].width > MAX_TARGET_WIDTH &&
+            boundRect[i].height > MAX_TARGET_HEIGHT)
+            continue; /* Extremely large object */
 
-                Mat roiFrame = frame(boundRect[i]);
-                minMaxLoc(roiFrame, &minVal, &maxVal, &minLoc, &maxLoc);
-                /* If difference of max and min value of ROI rect is too small then it could be noise such as cloud or sea */
-                if((maxVal - minVal) < 16)
-                    continue; /* Too small, drop it. */
+        if(boundRect[i].width < MIN_TARGET_WIDTH && 
+            boundRect[i].height < MIN_TARGET_HEIGHT)
+            break; /* Rest are small objects, ignore them */
+
+#if 1 /* Anti cloud ... */
+        double minVal; 
+        double maxVal; 
+        Point minLoc; 
+        Point maxLoc;
+
+        Mat roiFrame = frame(boundRect[i]);
+        minMaxLoc(roiFrame, &minVal, &maxVal, &minLoc, &maxLoc ); 
+            /* If difference of max and min value of ROI rect is too small then it could be noise such as cloud or sea */
+        if((maxVal - minVal) < 24)
+            continue; /* Too small, drop it. */
 #endif
 #if 1
-                if(roiFrame.cols > roiFrame.rows && (roiFrame.cols >> 4) > roiFrame.rows)
-                    continue; /* Ignore thin object */
-#endif
-
-                boundRect[i].y += y_offset;
-                roiRect.push_back(boundRect[i]);
-#if 0 /* Anti shark ... */
-                if(roiRect.size() > 12) {
-                    roiRect.clear();
-                    break;
-                }
-#else
-                if(++num_target >= MAX_NUM_TARGET)
-                    break;
-#endif
-        }
+        if(roiFrame.cols > roiFrame.rows && (roiFrame.cols >> 4) > roiFrame.rows)
+            continue; /* Ignore thin object */
+#endif                        
+        boundRect[i].y += y_offset;
+        roiRect.push_back(boundRect[i]);
+        if(++num_target >= MAX_NUM_TARGET)
+            break;
     }    
 }
 
-void extract_moving_object(Mat & frame, Mat & element, Ptr<cuda::Filter> & erodeFilter, Ptr<cuda::Filter> & gaussianFilter, 
-    Ptr<cuda::BackgroundSubtractorMOG2> & bsModel, vector<Rect> & roiRect, int y_offset = 0)
+void extract_moving_object(Mat & frame, 
+    Mat & elementErode, Mat & elementDilate, 
+    Ptr<cuda::Filter> & erodeFilter, Ptr<cuda::Filter> & dilateFilter, Ptr<cuda::Filter> & gaussianFilter, 
+    Ptr<cuda::BackgroundSubtractorMOG2> & bsModel, 
+    vector<Rect> & roiRect, int y_offset = 0)
 {
-    Mat foregroundMask;
+    Mat foregroundFrame;
     cuda::GpuMat gpuFrame;
-    cuda::GpuMat gpuForegroundMask;
-#if 0 /* Very poor performance ... Running by CPU is 10 times quick */
-    gpuFrame.upload(frame);
-    erodeFilter->apply(gpuFrame, gpuFrame);
-#else
-    //erode(frame, frame, element);
-    gpuFrame.upload(frame);
-#endif    
-    gaussianFilter->apply(gpuFrame, gpuFrame);
-    // pass the frame to background bsGrayModel
-    bsModel->apply(gpuFrame, gpuForegroundMask, -1);
-    //cuda::threshold(gpuForegroundMask, gpuForegroundMask, 10.0, 255.0, THRESH_BINARY);
-#if 0 /* Very poor performance ... Running by CPU is 10 times quick */
-    erodeFilter->apply(gpuForegroundMask, gpuForegroundMask);
-    gpuForegroundMask.download(foregroundMask);
-#else
-    gpuForegroundMask.download(foregroundMask);
-    //erode(foregroundMask, foregroundMask, element);
-    morphologyEx(foregroundMask, foregroundMask, MORPH_OPEN, element);
-#endif
+    cuda::GpuMat gpuGaussianFilterFrame;
+    cuda::GpuMat gpuForegroundFrame;
+    cuda::GpuMat gpuErodeFrame;
+    cuda::GpuMat gpuDilateFrame;
 
-    contour_moving_object(frame, foregroundMask, roiRect, y_offset);
+    gpuFrame.upload(frame); 
+    // pass the frame to background bsGrayModel
+    gaussianFilter->apply(gpuFrame, gpuGaussianFilterFrame);
+    bsModel->apply(gpuGaussianFilterFrame, gpuForegroundFrame, -1);
+    //cuda::threshold(gpuForegroundFrame, gpuForegroundFrame, 10.0, 255.0, THRESH_BINARY);
+#if 0 /* Run with GPU */
+    erodeFilter->apply(gpuForegroundFrame, gpuErodeFrame);
+    dilateFilter->apply(gpuErodeFrame, gpuDilateFrame);
+    gpuDilateFrame.download(foregroundFrame);
+#else /* Run with CPU */
+    gpuForegroundFrame.download(foregroundFrame);
+    morphologyEx(foregroundFrame, foregroundFrame, MORPH_ERODE, elementErode);
+    morphologyEx(foregroundFrame, foregroundFrame, MORPH_DILATE, elementDilate);
+#endif
+    contour_moving_object(frame, foregroundFrame, roiRect, y_offset);
 }
+
 
 /*
 *
@@ -1456,24 +1496,23 @@ int main(int argc, char**argv)
     int cy = (CAMERA_HEIGHT / 2) - 1;
 
     int erosion_size = 1;   
-    Mat element = cv::getStructuringElement(cv::MORPH_RECT,
-                        cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
-                        cv::Point(-1, -1) ); /* Default anchor point */
+    Mat elementErode = cv::getStructuringElement(cv::MORPH_RECT,
+                    cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
+                    cv::Point(-1, -1) ); /* Default anchor point */
 
-    Ptr<cuda::Filter> erodeFilter1 = cuda::createMorphologyFilter(MORPH_OPEN, CV_8UC1, element);
-    Ptr<cuda::Filter> erodeFilter2 = cuda::createMorphologyFilter(MORPH_OPEN, CV_8UC1, element);
+    int dilate_size = 2;   
+    Mat elementDilate = cv::getStructuringElement(cv::MORPH_RECT,
+                    cv::Size(2 * dilate_size + 1, 2 * dilate_size + 1), 
+                    cv::Point(-1, -1) ); /* Default anchor point */
 
-#if 1 /* TODO : For opencv-4.1.0 */
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel1 = cuda::createBackgroundSubtractorMOG2(90, 0, false); /* background history count, varThreshold, shadow detection */
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 0, false); /* background history count, varThreshold, shadow detection */
-    Ptr<cuda::Filter> gaussianFilter1 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 1.0);
-    Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 1.0);
-#else /* TODO : For opencv 4.4.0 */
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel1 = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel2 = cuda::createBackgroundSubtractorMOG2(90, 48, false); /* background history count, varThreshold, shadow detection */
-    Ptr<cuda::Filter> gaussianFilter1 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
-    Ptr<cuda::Filter> gaussianFilter2 = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(3, 3), 5.0);
-#endif
+    Ptr<cuda::Filter> erodeFilter = cuda::createMorphologyFilter(MORPH_ERODE, CV_8UC1, elementErode);
+    Ptr<cuda::Filter> dilateFilter = cuda::createMorphologyFilter(MORPH_DILATE, CV_8UC1, elementDilate);
+
+    /* background history count, varThreshold, shadow detection */
+
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 0, false); 
+    Ptr<cuda::Filter> gaussianFilter = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 0);
+
     Tracker tracker;
     Target *primaryTarget = 0;
 
@@ -1567,8 +1606,6 @@ int main(int argc, char**argv)
         Mat capFrame;
         camera.Read(capFrame);
 
-        //capFrame(Rect(capFrame.cols / 4, 0, capFrame.cols * 3 / 4, capFrame.rows)).copyTo(capFrame);
-
         Mat outFrame;
         if(f3xBase.IsVideoOutputResult()) {
             if(f3xBase.IsVideoOutput()) {
@@ -1582,17 +1619,7 @@ int main(int argc, char**argv)
         cvtColor(capFrame, grayFrame, COLOR_BGR2GRAY);
         vector<Rect> roiRect;
 
-        extract_moving_object(grayFrame, element, erodeFilter1, gaussianFilter1, bsModel1, roiRect);
-        
-        /* HSV color space Hue channel for bottom 1/3 region */
-        Mat hsvFrame, roiFrame;
-        int y_offset = capFrame.rows * 2 / 3;
-        capFrame(Rect(0, y_offset, capFrame.cols, capFrame.rows - y_offset)).copyTo(roiFrame);
-        cvtColor(roiFrame, hsvFrame, COLOR_BGR2HSV);
-        Mat hsvCh[3];
-        split(hsvFrame, hsvCh);
-
-        extract_moving_object(hsvCh[0], element, erodeFilter2, gaussianFilter2, bsModel2, roiRect, y_offset);
+        extract_moving_object(grayFrame, elementErode, elementDilate, erodeFilter, dilateFilter, gaussianFilter, bsModel, roiRect);
 
         tracker.Update(roiRect);
 
@@ -1611,13 +1638,7 @@ int main(int argc, char**argv)
         if(primaryTarget) {
             if(f3xBase.IsVideoOutputResult()) {
                 if(f3xBase.IsVideoOutput()) {
-                    Rect r = primaryTarget->EndRect();
-                    rectangle(outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0);
-                    if(primaryTarget->NumberOfRect() > 1) { /* Minimum 2 points ... */
-                        for(int i=0;i<primaryTarget->NumberOfRect()-1;i++) {
-                            line(outFrame, primaryTarget->GetPoint(i), primaryTarget->GetPoint(i+1), Scalar(0, 255, 255), 1);
-                        }
-                    }
+                    tracker.DrawPrimaryTarget(outFrame);
                 }
             }
             if(primaryTarget->CourseLength() > MIN_COURSE_LENGTH && 
