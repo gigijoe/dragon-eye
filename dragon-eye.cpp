@@ -745,16 +745,17 @@ public:
         const char *ttyTHS1 = "/dev/ttyTHS1";
 
         m_ttyFd = open (ttyUSB0, O_RDWR | O_NOCTTY | O_SYNC);
-        if(m_ttyFd) {
+        if(m_ttyFd > 0) {
             SetupTTY(m_ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
             printf("Open %s successful ...\n", ttyUSB0);
         } else {
             printf("Error %d opening %s: %s\n", errno, ttyUSB0, strerror (errno));
             m_ttyFd = open (ttyTHS1, O_RDWR | O_NOCTTY | O_SYNC);
-            if(m_ttyFd) {
+            if(m_ttyFd > 0) {
                 SetupTTY(m_ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
                 printf("Open %s successful ...\n", ttyTHS1);
-            }
+            } else
+                printf("Error %d opening %s: %s\n", errno, ttyTHS1, strerror (errno));
         }
 
         return m_ttyFd;
