@@ -33,6 +33,7 @@ using namespace std;
 #include <mutex>
 #include <queue>
 #include <thread>
+#include <list>
 
 #include <iostream>
 #include <fstream>
@@ -91,7 +92,7 @@ typedef enum { BASE_UNKNOWN, BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseT
 *
 */
 
-static inline bool ContoursSort(vector<cv::Point> contour1, vector<cv::Point> contour2)  
+static inline bool ContoursSortByArea(vector<cv::Point> contour1, vector<cv::Point> contour2)  
 {  
     //return (contour1.size() > contour2.size()); /* Outline length */
     return (cv::contourArea(contour1) > cv::contourArea(contour2)); /* Area */
@@ -135,6 +136,7 @@ public:
         if(m_rects.size() > 0)
             m_courseLength += norm(roi.tl() - m_rects.back().tl());
 
+#if 0
         if(m_rects.size() == 1) {
             m_velocity.x = (roi.tl().x - m_rects.back().tl().x);
             m_velocity.y = (roi.tl().y - m_rects.back().tl().y);
@@ -142,6 +144,12 @@ public:
             m_velocity.x = (m_velocity.x + (roi.tl().x - m_rects.back().tl().x)) / 2;
             m_velocity.y = (m_velocity.y + (roi.tl().y - m_rects.back().tl().y)) / 2;
         }
+#else
+        if(m_rects.size() >= 1) {
+            m_velocity.x = (roi.tl().x - m_rects.back().tl().x);
+            m_velocity.y = (roi.tl().y - m_rects.back().tl().y);
+        }
+#endif
         if(m_rects.size() >= 1) {
             Point p = roi.tl() - m_rects.back().tl();
             m_vectors.push_back(p);
@@ -186,6 +194,21 @@ public:
         return v1.dot(v2) / (norm(v1) * norm(v1));
     }
 
+    void Draw(Mat & outFrame) {
+        Rect r = LastRect();
+        rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
+
+        if(m_rects.size() > 1) { /* Minimum 2 points ... */
+            for(int i=0;i<m_rects.size()-1;i++) {
+                Point p0 = m_rects[i].tl();
+                Point p1 = m_rects[i+1].tl();
+                line(outFrame, p0, p1, Scalar(0, 0, 255), 1);
+                //Point v = p1 - p0;
+                //printf("[%d,%d]\n", v.x, v.y);
+            }
+        }        
+    }
+
     inline double CourseLength() { return m_courseLength; }
     inline unsigned long FrameTick() { return m_frameTick; }
     inline Rect & LastRect() { return m_rects.back(); }
@@ -204,7 +227,7 @@ public:
     friend class Tracker;
 };
 
-static inline bool TargetSort(Target & a, Target & b)
+static inline bool TargetSortByArea(Target & a, Target & b)
 {
     return a.LastRect().area() > b.LastRect().area();
 }
@@ -218,74 +241,44 @@ class Tracker
 private:
     unsigned long m_frameTick;
     list< Target > m_targets;
-    Target *m_primaryTarget;
 
 public:
-    Tracker() : m_frameTick(0), m_primaryTarget(0) {}
+    Tracker() : m_frameTick(0) {}
 
-    void Update(vector< Rect > & roiRect) {
-        const int euclidean_distance = 120;
-
-        if(m_primaryTarget) {
-            Target *t = m_primaryTarget;
-            int i;
-            for(i=0; i<roiRect.size(); i++) {
-                Rect r = t->m_rects.back();
-                if((r & roiRect[i]).area() > 0) { /* Target tracked ... */
-                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
-                        break;
-                }
-
-                unsigned long f = m_frameTick - t->FrameTick();
-                r.x += t->m_velocity.x * f;
-                r.y += t->m_velocity.y * f;
-                if((r & roiRect[i]).area() > 0) { /* Target tracked with velocity ... */
-                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
-                        break;
-                }
-#if 0
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with velocity and Euclidean distance ... */
-                    break;
-#endif
-                r = t->m_rects.back();
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) { /* Target tracked with Euclidean distance ... */
-                    if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
-                        break;
-                }
-            }
-            if(i != roiRect.size()) { /* Primary Target tracked */
-                t->Update(roiRect[i], m_frameTick);
-                return;
-            }
-        }
-
+    void Update(list< Rect > & roiRect) {
         for(list< Target >::iterator t=m_targets.begin();t!=m_targets.end();) { /* Try to find lost targets */
-            int i;
-            for(i=0; i<roiRect.size(); i++) {
-                Rect r = t->m_rects.back();
-                if((r & roiRect[i]).area() > 0) { /* Target tracked ... */
-                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+            list<Rect>::iterator rr;
+            Rect r1 = t->m_rects.back();
+            Rect r2 = r1;
+            unsigned long f = m_frameTick - t->FrameTick();
+            r2.x += t->m_velocity.x * f;
+            r2.y += t->m_velocity.y * f;
+            for(rr=roiRect.begin();rr!=roiRect.end();rr++) {
+                if((r1 & *rr).area() > 0) { /* Target tracked ... */
+                    //if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
+                        break;                
+                }
+
+                if((r2 & *rr).area() > 0) { /* Target tracked with velocity ... */
+                    //if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
                         break;
                 }
 
-                unsigned long f = m_frameTick - t->FrameTick();
-                r.x += t->m_velocity.x * f;
-                r.y += t->m_velocity.y * f;
-                if((r & roiRect[i]).area() > 0) { /* Target tracked with velocity ... */
-                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
-                        break;
-                }
-#if 0
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with velocity and Euclidean distance ... */
-                    break;
-#endif
-                r = t->m_rects.back();
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) { /* Target tracked with Euclidean distance ... */
-                    if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
+                if(cv::norm(r2.tl()-rr->tl()) < (rr->width + rr->height) / 2) { /* Target tracked with velocity and Euclidean distance ... */
+                    //if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
                         break;
                 }
             }
-            if(i == roiRect.size()) { /* Target missing ... */
+            if(rr == roiRect.end()) { /* Target missing ... */
+                for(rr=roiRect.begin();rr!=roiRect.end();rr++) { /* */
+                    if(cv::norm(r2.tl()-rr->tl()) < (rr->width + rr->height)) { /* Target tracked with velocity and Euclidean distance ... */
+                        if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
+                            break;
+                    }
+                }
+            }
+
+            if(rr == roiRect.end()) { /* Target missing ... */
                 bool ignoreMissingTarget = false;
                 if(t->m_rects.size() <= MAX_NUM_FRAME_MISSING_TARGET) { 
                     for(int j=0;j<t->m_vectors.size();j++) {
@@ -296,85 +289,37 @@ public:
                         }
                     }
                 }
-                if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET ||
-                    ignoreMissingTarget) { /* Target still missing for over X frames */
+                if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET || /* Target still missing for over X frames */
+                    ignoreMissingTarget) { 
 #if 1            
                     Point p = t->m_rects.back().tl();
-                    printf("lost target : %d, %d\n", p.x, p.y);
-#endif
-                    if(&(*t) == m_primaryTarget)
-                        m_primaryTarget = 0;
-
+                    //printf("lost target : %d, %d\n", p.x, p.y);
+                    printf("lost target : %d, %d\n", t->m_velocity.x, t->m_velocity.y);
+#endif          
                     t = m_targets.erase(t); /* Remove tracing target */
                     continue;
                 }
+            } else { /* Target tracked ... */
+                t->Update(*rr, m_frameTick);
+                roiRect.erase(rr);
             }
             t++;
         }
 
-        for(int i=0; i<roiRect.size(); i++) { /* Try to find NEW target for tracking ... */
-            list< Target >::iterator t;
-            for(t=m_targets.begin();t!=m_targets.end();t++) {
-                Rect r = t->m_rects.back();
-                if((r & roiRect[i]).area() > 0) { /* Next step tracked ... */
-                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
-                        break;
-                }
-
-                unsigned long f = m_frameTick - t->FrameTick();
-                r.x += t->m_velocity.x * f;
-                r.y += t->m_velocity.y * f;
-                if((r & roiRect[i]).area() > 0) { /* Next step tracked with velocity ... */
-                    //if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
-                        break;
-                }
-#if 0
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) /* Target tracked with velocity and Euclidean distance ... */
-                    break;
-#endif
-                r = t->m_rects.back();
-                if(cv::norm(r.tl()-roiRect[i].tl()) < euclidean_distance) { /* Target tracked with Euclidean distance ... */                   
-                    if(t->DotProduct(roiRect[i].tl()) >= 0) /* Two vector less than 90 degree */
-                        break;
-                }
-            }
-            if(t == m_targets.end()) { /* New target */
-#if 0
-                if(roiRect[i].y > 960)
-                    continue;
-#endif
-                m_targets.push_back(Target(roiRect[i], m_frameTick));
+        for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();rr++) {    
+            m_targets.push_back(Target(*rr, m_frameTick));
 #if 1            
-                printf("new target : %d, %d\n", roiRect[i].tl().x, roiRect[i].tl().y);
+            printf("new target : %d, %d\n", rr->tl().x, rr->tl().y);
 #endif
-            } else
-                t->Update(roiRect[i], m_frameTick);
         }
+
         m_frameTick++;
 
         if(m_targets.size() > 1)
-            m_targets.sort(TargetSort);
-
-        if(m_targets.size() > 0) {
-            if(m_primaryTarget == 0)
-                m_primaryTarget = &m_targets.front();
-        }
+            m_targets.sort(TargetSortByArea);
     }
 
-    inline Target *PrimaryTarget() { return m_primaryTarget; }
-
-    void DrawPrimaryTarget(Mat & outFrame) {
-        Rect r = m_primaryTarget->LastRect();
-        rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
-
-        if(m_primaryTarget->m_rects.size() > 1) { /* Minimum 2 points ... */
-            for(int i=0;i<m_primaryTarget->m_rects.size()-1;i++) {
-                Point p0 = m_primaryTarget->m_rects[i].tl();
-                Point p1 = m_primaryTarget->m_rects[i+1].tl();
-                line(outFrame, p0, p1, Scalar(0, 0, 255), 1);
-            }
-        }        
-    }
+    inline list< Target > & TargetList() { return m_targets; }
 };
 
 /*
@@ -628,6 +573,8 @@ private:
     string m_rtpRemoteHost;
     uint16_t m_rtpRemotePort;
 
+    uint8_t m_mog2_threshold; /* 0 ~ 64 / Most senstive is 0 / Default 16 */
+
     int SetupTTY(int fd, int speed, int parity) {
         struct termios tty;
         memset (&tty, 0, sizeof tty);
@@ -677,7 +624,8 @@ public:
         m_isVideoOutputFile(false), 
         m_isVideoOutputRTP(false), 
         m_isVideoOutputResult(false),
-        m_udpRemotePort(4999), m_rtpRemotePort(5000) {
+        m_udpRemotePort(4999), m_rtpRemotePort(5000),
+        m_mog2_threshold(16) {
     }
 
     void SetupGPIO() {
@@ -951,6 +899,16 @@ public:
                 else
                     m_isBaseHwSwitch = false;
             } else if(it->first == "base.trigger.reset") { /* triggle then reset target */
+            } else if(it->first == "base.mog2.threshold") { /* Backgroung subtractor MOG2 threshold */
+                string & s = it->second;
+                if(::all_of(s.begin(), s.end(), ::isdigit)) {
+                    int r = stoi(s);
+                    if(r >= 0 && r <=64)
+                        m_mog2_threshold = (r & 0xff);
+                    else
+                        cout << "Out of range " << it->first << "=" << s << endl;
+                } else
+                    cout << "Invalid " << it->first << "=" << s << endl;
             } else if(it->first == "base.udp.remote.host") {
                 if(IsValidateIpAddress(it->second))
                     m_udpRemoteHost = it->second;
@@ -1043,6 +1001,10 @@ public:
 
     inline bool IsVideoOutputResult() const {
         return m_isVideoOutputResult;
+    }
+
+    inline uint8_t Mog2Threshold() const {
+        return m_mog2_threshold;
     }
 
     int ReadTty(uint8_t *data, size_t size) {
@@ -1149,6 +1111,7 @@ private:
     char gstStr[STR_SIZE];
 
 public:
+    int sensor_id = 0;
     int wbmode = 0;
     int tnr_mode = 1;
     int tnr_strength = -1;
@@ -1172,15 +1135,15 @@ public:
 /* Reference : nvarguscamerasrc.txt */
 /* export GST_DEBUG=2 to show debug message */
 #if 0
-    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=0 ! \
+    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=0 wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=0 ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
         CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 #else
-        snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
+        snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
-            wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
+            sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
             CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 #endif
 /*
@@ -1220,7 +1183,9 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         vector<pair<string, string> >::iterator it;
         for (it=cfg.begin(); it!=cfg.end(); it++) {
             cout << it->first << " = " << it->second << endl;
-            if(it->first == "wbmode")
+            if(it->first == "sensor-id")
+                sensor_id = stoi(it->second);
+            else if(it->first == "wbmode")
                 wbmode = stoi(it->second);
             else if(it->first == "tnr-mode")
                 tnr_mode = stoi(it->second);
@@ -1262,10 +1227,10 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         vector<pair<string, float> > exposure_brightness;
 
         for(int i=0;i<5;i++) {
-            snprintf(gstStr, STR_SIZE, "nvarguscamerasrc wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
+            snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
-                wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposureTimeRange[i], exposurecompensation,
+                sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposureTimeRange[i], exposurecompensation,
                 CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 
             cout << endl;
@@ -1366,7 +1331,7 @@ static void OnPushButton(F3xBase & fb)
     }
 }
 
-static void contour_moving_object(Mat & frame, Mat & foregroundFrame, vector<Rect> & roiRect, int y_offset = 0)
+static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect> & roiRect, int y_offset = 0)
 {
     uint32_t num_target = 0;
 
@@ -1374,7 +1339,7 @@ static void contour_moving_object(Mat & frame, Mat & foregroundFrame, vector<Rec
     vector< Vec4i > hierarchy;
 //  findContours(foregroundFrame, contours, hierarchy, RETR_TREE, CHAIN_APPROX_NONE);
     findContours(foregroundFrame, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-    sort(contours.begin(), contours.end(), ContoursSort); /* Contours sort by area, controus[0] is largest */
+    sort(contours.begin(), contours.end(), ContoursSortByArea); /* Contours sort by area, controus[0] is largest */
 
     vector<Rect> boundRect( contours.size() );
     for(int i=0; i<contours.size(); i++) {
@@ -1416,7 +1381,7 @@ void extract_moving_object(Mat & frame,
     Mat & elementErode, Mat & elementDilate, 
     Ptr<cuda::Filter> & erodeFilter, Ptr<cuda::Filter> & dilateFilter, Ptr<cuda::Filter> & gaussianFilter, 
     Ptr<cuda::BackgroundSubtractorMOG2> & bsModel, 
-    vector<Rect> & roiRect, int y_offset = 0)
+    list<Rect> & roiRect, int y_offset = 0)
 {
     Mat foregroundFrame;
     cuda::GpuMat gpuFrame;
@@ -1427,8 +1392,12 @@ void extract_moving_object(Mat & frame,
 
     gpuFrame.upload(frame); 
     // pass the frame to background bsGrayModel
+#if 0    
     gaussianFilter->apply(gpuFrame, gpuGaussianFilterFrame);
-    bsModel->apply(gpuGaussianFilterFrame, gpuForegroundFrame, -1);
+    bsModel->apply(gpuGaussianFilterFrame, gpuForegroundFrame, 0.05);
+#else
+    bsModel->apply(gpuFrame, gpuForegroundFrame, 0.05);
+#endif    
     //cuda::threshold(gpuForegroundFrame, gpuForegroundFrame, 10.0, 255.0, THRESH_BINARY);
 #if 0 /* Run with GPU */
     erodeFilter->apply(gpuForegroundFrame, gpuErodeFrame);
@@ -1510,8 +1479,12 @@ int main(int argc, char**argv)
     Ptr<cuda::Filter> dilateFilter = cuda::createMorphologyFilter(MORPH_DILATE, CV_8UC1, elementDilate);
 
     /* background history count, varThreshold, shadow detection */
-
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(90, 0, false); 
+    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
+    //cout << bsModel->getVarInit() << " / " << bsModel->getVarMax() << " / " << bsModel->getVarMax() << endl;
+    /* Default variance of each gaussian component 15 / 75 / 75 */ 
+    bsModel->setVarInit(15);
+    bsModel->setVarMax(20);
+    bsModel->setVarMin(4);
     Ptr<cuda::Filter> gaussianFilter = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 0);
 
     Tracker tracker;
@@ -1618,56 +1591,50 @@ int main(int argc, char**argv)
         /* Gray color space for whole region */
         Mat grayFrame;
         cvtColor(capFrame, grayFrame, COLOR_BGR2GRAY);
-        vector<Rect> roiRect;
+        list<Rect> roiRect;
 
         extract_moving_object(grayFrame, elementErode, elementDilate, erodeFilter, dilateFilter, gaussianFilter, bsModel, roiRect);
 
         tracker.Update(roiRect);
 
         if(f3xBase.IsVideoOutput()) {
-            RNG rng(12345);
-            for(int i=0;i<roiRect.size();i++) {
-                Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
-                rectangle(outFrame, roiRect[i].tl(), roiRect[i].br(), color, 2, 8, 0 );
+            for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();rr++) {
+                rectangle( outFrame, rr->tl(), rr->br(), Scalar(0, 255, 0), 2, 8, 0 );
             }
         }
 
         f3xBase.RedLed(off);
         f3xBase.Relay(off);
 
-        primaryTarget = tracker.PrimaryTarget();
-        if(primaryTarget) {
+        list< Target > & targets = tracker.TargetList();
+
+        for(list< Target >::iterator t=targets.begin();t!=targets.end();t++) {
             if(f3xBase.IsVideoOutputResult()) {
                 if(f3xBase.IsVideoOutput()) {
-                    tracker.DrawPrimaryTarget(outFrame);
+                    t->Draw(outFrame);
                 }
             }
-            if(primaryTarget->CourseLength() > MIN_COURSE_LENGTH && 
-                    primaryTarget->TrackedCount() > MIN_TARGET_TRACKED_COUNT) {
-                if((primaryTarget->BeginPoint().y > cy && primaryTarget->EndPoint().y <= cy) ||
-                    (primaryTarget->BeginPoint().y < cy && primaryTarget->EndPoint().y >= cy)) {
+            if(t->CourseLength() > MIN_COURSE_LENGTH && 
+                    t->TrackedCount() > MIN_TARGET_TRACKED_COUNT) {
+                if((t->BeginPoint().y > cy && t->EndPoint().y <= cy) ||
+                    (t->BeginPoint().y < cy && t->EndPoint().y >= cy)) {
 
-                    if(primaryTarget->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
+                    if(t->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
                         if(f3xBase.IsVideoOutputResult()) {
                             if(f3xBase.IsVideoOutput())
                                 line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
                         }
-                        f3xBase.TriggerTty(primaryTarget->TriggerCount() == 0);
-                        f3xBase.TriggerUdpSocket(primaryTarget->TriggerCount() == 0);
+                        f3xBase.TriggerTty(t->TriggerCount() == 0);
+                        f3xBase.TriggerUdpSocket(t->TriggerCount() == 0);
                         f3xBase.RedLed(on);
                         f3xBase.Relay(on);
 
-                        primaryTarget->Trigger();
+                        t->Trigger();
                     }
                 }
             }
-        }
-/*
-        Mat background;
-        bsModel1->getBackgroundImage(background);
-        if (!background.empty())
-            imshow("mean background image", background );
-*/
+        }        
+
         if(f3xBase.IsVideoOutput()) {
             if(f3xBase.IsVideoOutputResult()) {
                 char str[32];
