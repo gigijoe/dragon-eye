@@ -1,0 +1,11 @@
+[Unit]
+Description=HTTP Live Stream
+After=nvargus-daemon.service
+
+[Service]
+ExecStart=/usr/local/bin/hls.sh
+Type=oneshot
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset=utf-8 />
+<title>F3F live video</title>
+  <link href="https://unpkg.com/video.js/dist/video-js.css" rel="stylesheet">
+</head>
+<body>
+  <h1>F3F live video - simple HLS player</h1>
+
+  <video-js id="video_id" class="vjs-default-skin" controls preload="auto" width="720" height="1280">
+    <source src="http://10.0.0.1:8000/playlist.m3u8" type="application/x-mpegURL">
+  </video-js>
+  <script src="https://unpkg.com/video.js/dist/video.js"></script>
+  <script src="https://unpkg.com/@videojs/http-streaming/dist/videojs-http-streaming.js"></script>
+  <script>
+    var player = videojs('video_id');
+  </script>
+  
+</body>
+</html>

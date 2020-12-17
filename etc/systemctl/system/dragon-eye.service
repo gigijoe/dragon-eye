@@ -1,0 +1,11 @@
+[Unit]
+Description=Dragon Eye
+After=nvargus-daemon.service
+
+[Service]
+ExecStart=/usr/local/bin/dragon-eye
+Type=oneshot
+
+[Install]
+WantedBy=multi-user.target
+

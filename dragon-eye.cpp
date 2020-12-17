@@ -98,6 +98,15 @@ static inline bool ContoursSortByArea(vector<cv::Point> contour1, vector<cv::Poi
     return (cv::contourArea(contour1) > cv::contourArea(contour2)); /* Area */
 }  
 
+inline void writeText( Mat & mat, const string text, const Point textOrg)
+{
+   int fontFace = FONT_HERSHEY_SIMPLEX;
+   double fontScale = 1;
+   int thickness = 1;  
+   //Point textOrg( 10, 40 );
+   putText( mat, text, textOrg, fontFace, fontScale, Scalar(0, 0, 0), thickness, cv::LINE_8 );
+}
+
 /*
 *
 */
@@ -194,17 +203,22 @@ public:
         return v1.dot(v2) / (norm(v1) * norm(v1));
     }
 
-    void Draw(Mat & outFrame) {
+    void Draw(Mat & outFrame, bool drawAll = false) {
         Rect r = LastRect();
         rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
 
+        //RNG rng(12345);
         if(m_rects.size() > 1) { /* Minimum 2 points ... */
             for(int i=0;i<m_rects.size()-1;i++) {
                 Point p0 = m_rects[i].tl();
                 Point p1 = m_rects[i+1].tl();
                 line(outFrame, p0, p1, Scalar(0, 0, 255), 1);
+                //Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
+                //line(outFrame, p0, p1, color, 1);
                 //Point v = p1 - p0;
                 //printf("[%d,%d]\n", v.x, v.y);
+                if(drawAll)
+                    rectangle( outFrame, m_rects[i].tl(), m_rects[i].br(), Scalar( 196, 0, 0 ), 2, 8, 0 );
             }
         }        
     }
@@ -241,9 +255,16 @@ class Tracker
 private:
     unsigned long m_frameTick;
     list< Target > m_targets;
+    Rect m_newTargetRestrictionRect;
 
 public:
     Tracker() : m_frameTick(0) {}
+
+    void NewTargetRestriction(const Rect & r) {
+        m_newTargetRestrictionRect = r;
+    }
+
+    Rect NewTargetRestriction() const {   return m_newTargetRestrictionRect; }
 
     void Update(list< Rect > & roiRect) {
         for(list< Target >::iterator t=m_targets.begin();t!=m_targets.end();) { /* Try to find lost targets */
@@ -264,14 +285,14 @@ public:
                         break;
                 }
 
-                if(cv::norm(r2.tl()-rr->tl()) < (rr->width + rr->height) / 2) { /* Target tracked with velocity and Euclidean distance ... */
-                    //if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
+                if(cv::norm(r2.tl()-rr->tl()) < (rr->width + rr->height)) { /* Target tracked with velocity and Euclidean distance ... */
+                    if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
                         break;
                 }
             }
             if(rr == roiRect.end()) { /* Target missing ... */
                 for(rr=roiRect.begin();rr!=roiRect.end();rr++) { /* */
-                    if(cv::norm(r2.tl()-rr->tl()) < (rr->width + rr->height)) { /* Target tracked with velocity and Euclidean distance ... */
+                    if(cv::norm(r2.tl()-rr->tl()) < ((rr->width + rr->height) * 2)) { /* Target tracked with velocity and Euclidean distance ... */
                         if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
                             break;
                     }
@@ -279,18 +300,7 @@ public:
             }
 
             if(rr == roiRect.end()) { /* Target missing ... */
-                bool ignoreMissingTarget = false;
-                if(t->m_rects.size() <= MAX_NUM_FRAME_MISSING_TARGET) { 
-                    for(int j=0;j<t->m_vectors.size();j++) {
-                        Point p = t->m_vectors[j];
-                        if(p.x == 0 && p.y == 0) { /* With none moving behavior. Maybe fake signal ... */
-                            ignoreMissingTarget = true;
-                            break;
-                        }
-                    }
-                }
-                if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET || /* Target still missing for over X frames */
-                    ignoreMissingTarget) { 
+                if(m_frameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) { /* Target still missing for over X frames */
 #if 1            
                     Point p = t->m_rects.back().tl();
                     //printf("lost target : %d, %d\n", p.x, p.y);
@@ -306,7 +316,12 @@ public:
             t++;
         }
 
-        for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();rr++) {    
+        for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();rr++) {
+            if(!m_newTargetRestrictionRect.empty()) {
+                if((m_newTargetRestrictionRect & *rr).area() > 0)
+                    continue;
+            }
+
             m_targets.push_back(Target(*rr, m_frameTick));
 #if 1            
             printf("new target : %d, %d\n", rr->tl().x, rr->tl().y);
@@ -392,7 +407,9 @@ void FrameQueue::reset()
 
 static FrameQueue videoOutputQueue;
 
-void VideoOutputThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, bool isVideoOutputRTP, const char *rtpRemoteHost, uint16_t rtpRemotePort, int width, int height)
+void VideoOutputThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, 
+    bool isVideoOutputRTP, const char *rtpRemoteHost, uint16_t rtpRemotePort, 
+    bool isVideoOutputHLS, int width, int height)
 {    
     Size videoSize = Size((int)width,(int)height);
     char gstStr[STR_SIZE];
@@ -400,6 +417,7 @@ void VideoOutputThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVid
     VideoWriter outFile;
     VideoWriter outScreen;
     VideoWriter outRTP;
+    VideoWriter outHLS;
 
     char filePath[64];
     int videoOutoutIndex = 0;
@@ -461,7 +479,7 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=224.1.1.1 port=%u auto-multicast=
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
-h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=%u sync=false async=false ",
+h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=%u sync=false async=false ",
             30, rtpRemoteHost, rtpRemotePort);
 #endif
         outRTP.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
@@ -469,6 +487,18 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=%u sync=false async=false
         cout << gstStr << endl;
         cout << endl;
         cout << "*** Start RTP video ***" << endl;        
+    }
+
+    if(isVideoOutputHLS) {
+        snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
+videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=1 ! omxh264enc control-rate=2 bitrate=4000000 ! h264parse ! mpegtsmux ! \
+hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts target-duration=1 max-files=10 ", 30);
+        outHLS.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
+        cout << endl;
+        cout << gstStr << endl;
+        cout << endl;
+        cout << "*** Start HLS video ***" << endl;        
     }
 
     videoOutputQueue.reset();
@@ -484,6 +514,8 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=%u sync=false async=false
                 outScreen.write(frame);
             if(isVideoOutputRTP)
                 outRTP.write(frame);
+            if(isVideoOutputHLS)
+                outHLS.write(frame);
             
             steady_clock::time_point t2 = steady_clock::now();
             double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
@@ -508,7 +540,11 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=%s port=%u sync=false async=false
             cout << "*** Stop RTP video ***" << endl;
             outRTP.release();
         }
-
+        if(isVideoOutputHLS) {
+            cout << endl;
+            cout << "*** Stop HLS video ***" << endl;
+            outHLS.release();
+        }
     }    
 }
 
@@ -566,6 +602,7 @@ private:
     bool m_isVideoOutputScreen;
     bool m_isVideoOutputFile;
     bool m_isVideoOutputRTP;
+    bool m_isVideoOutputHLS;
     bool m_isVideoOutputResult;
 
     string m_udpRemoteHost;
@@ -574,6 +611,7 @@ private:
     uint16_t m_rtpRemotePort;
 
     uint8_t m_mog2_threshold; /* 0 ~ 64 / Most senstive is 0 / Default 16 */
+    bool m_isNewTargetRestriction;
 
     int SetupTTY(int fd, int speed, int parity) {
         struct termios tty;
@@ -623,9 +661,11 @@ public:
         m_isVideoOutputScreen(false), 
         m_isVideoOutputFile(false), 
         m_isVideoOutputRTP(false), 
+        m_isVideoOutputHLS(false),
         m_isVideoOutputResult(false),
         m_udpRemotePort(4999), m_rtpRemotePort(5000),
-        m_mog2_threshold(16) {
+        m_mog2_threshold(16),
+        m_isNewTargetRestriction(false) {
     }
 
     void SetupGPIO() {
@@ -899,6 +939,11 @@ public:
                 else
                     m_isBaseHwSwitch = false;
             } else if(it->first == "base.trigger.reset") { /* triggle then reset target */
+            } else if(it->first == "base.new.target.restriction") { /* triggle then reset target */
+                if(it->second == "yes" || it->second == "1")
+                    m_isNewTargetRestriction = true;
+                else
+                    m_isNewTargetRestriction = false;
             } else if(it->first == "base.mog2.threshold") { /* Backgroung subtractor MOG2 threshold */
                 string & s = it->second;
                 if(::all_of(s.begin(), s.end(), ::isdigit)) {
@@ -942,6 +987,11 @@ public:
                     m_isVideoOutputRTP = true;
                 else
                     m_isVideoOutputRTP = false;
+            } else if(it->first == "video.output.hls") {
+                if(it->second == "yes" || it->second == "1")
+                    m_isVideoOutputHLS = true;
+                else
+                    m_isVideoOutputHLS = false;
             } else if(it->first == "video.output.result") {
                 if(it->second == "yes" || it->second == "1")
                     m_isVideoOutputResult = true;
@@ -985,6 +1035,10 @@ public:
         return m_rtpRemotePort;
     }
 
+    inline bool IsVideoOutputHLS() const {
+        return m_isVideoOutputHLS;
+    }
+
     const char *UdpRemoteHost() {
         if(m_udpRemoteHost.empty())
             return 0;
@@ -996,7 +1050,7 @@ public:
     }
 
     inline bool IsVideoOutput() const {
-        return (m_isVideoOutputScreen || m_isVideoOutputFile || m_isVideoOutputRTP);
+        return (m_isVideoOutputScreen || m_isVideoOutputFile || m_isVideoOutputRTP || m_isVideoOutputHLS);
     }
 
     inline bool IsVideoOutputResult() const {
@@ -1005,6 +1059,10 @@ public:
 
     inline uint8_t Mog2Threshold() const {
         return m_mog2_threshold;
+    }
+
+    inline bool IsNewTargetRestriction() const {
+        return m_isNewTargetRestriction;
     }
 
     int ReadTty(uint8_t *data, size_t size) {
@@ -1327,7 +1385,9 @@ static void OnPushButton(F3xBase & fb)
         camera.Open();
 
         if(fb.IsVideoOutput())
-            voThread = thread(&VideoOutputThread, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), fb.IsVideoOutputRTP(), fb.RtpRemoteHost(), fb.RtpRemotePort(), CAMERA_WIDTH, CAMERA_HEIGHT);
+            voThread = thread(&VideoOutputThread, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), 
+                fb.IsVideoOutputRTP(), fb.RtpRemoteHost(), fb.RtpRemotePort(), 
+                fb.IsVideoOutputHLS(), CAMERA_WIDTH, CAMERA_HEIGHT);
     }
 }
 
@@ -1441,6 +1501,7 @@ int main(int argc, char**argv)
     if(signal(SIGHUP, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGHUP\n");
 
+
     ofstream pf(PID_FILE); 
     if(pf) {
         pf << getpid();
@@ -1489,6 +1550,8 @@ int main(int argc, char**argv)
 
     Tracker tracker;
     Target *primaryTarget = 0;
+    if(f3xBase.IsNewTargetRestriction())
+        tracker.NewTargetRestriction(Rect(cy - 200, cx - 200, 400, 200));
 
     cout << endl;
     cout << "### Press button to start object tracking !!!" << endl;
@@ -1595,16 +1658,19 @@ int main(int argc, char**argv)
 
         extract_moving_object(grayFrame, elementErode, elementDilate, erodeFilter, dilateFilter, gaussianFilter, bsModel, roiRect);
 
-        tracker.Update(roiRect);
-
         if(f3xBase.IsVideoOutput()) {
-            for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();rr++) {
+            for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();rr++)
                 rectangle( outFrame, rr->tl(), rr->br(), Scalar(0, 255, 0), 2, 8, 0 );
+            if(f3xBase.IsNewTargetRestriction()) {
+                Rect nr = tracker.NewTargetRestriction();
+                rectangle( outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
             }
         }
 
         f3xBase.RedLed(off);
         f3xBase.Relay(off);
+
+        tracker.Update(roiRect);
 
         list< Target > & targets = tracker.TargetList();
 
@@ -1639,11 +1705,14 @@ int main(int argc, char**argv)
             if(f3xBase.IsVideoOutputResult()) {
                 char str[32];
                 snprintf(str, 32, "FPS : %.2lf", fps);
+                writeText(outFrame, string(str), Point( 10, 40 ));
+/*
                 int fontFace = FONT_HERSHEY_SIMPLEX;
                 const double fontScale = 1;
                 const int thicknessScale = 1;  
                 Point textOrg(40, 40);
                 putText(outFrame, string(str), textOrg, fontFace, fontScale, Scalar(0, 255, 0), thicknessScale, cv::LINE_8);
+*/
                 videoOutputQueue.push(outFrame.clone());
             } else {
                 videoOutputQueue.push(capFrame.clone());
