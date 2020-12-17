@@ -409,7 +409,7 @@ static FrameQueue videoOutputQueue;
 
 void VideoOutputThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, 
     bool isVideoOutputRTP, const char *rtpRemoteHost, uint16_t rtpRemotePort, 
-    bool isVideoOutputHLS, int width, int height)
+    bool isVideoOutputHLS, bool isVideoOutputRTSP, int width, int height)
 {    
     Size videoSize = Size((int)width,(int)height);
     char gstStr[STR_SIZE];
@@ -418,6 +418,7 @@ void VideoOutputThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVid
     VideoWriter outScreen;
     VideoWriter outRTP;
     VideoWriter outHLS;
+    VideoWriter outRTSP;
 
     char filePath[64];
     int videoOutoutIndex = 0;
@@ -456,7 +457,7 @@ udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
     }
 
     if(isVideoOutputScreen) {
-        snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
+        snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv ! video/x-raw(memory:NVMM) ! \
 nvoverlaysink sync=false ", 30);
@@ -470,7 +471,7 @@ nvoverlaysink sync=false ", 30);
     if(isVideoOutputRTP && rtpRemoteHost) {
 #undef MULTICAST_RTP
 #ifdef MULTICAST_RTP /* Multicast RTP does NOT work with wifi due to low speed ... */
-        snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
+        snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
 h265parse ! rtph265pay mtu=1400 ! udpsink host=224.1.1.1 port=%u auto-multicast=true sync=false async=false ",
@@ -490,7 +491,7 @@ h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=
     }
 
     if(isVideoOutputHLS) {
-        snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
+        snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh264enc control-rate=2 bitrate=4000000 ! h264parse ! mpegtsmux ! \
 hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts target-duration=1 max-files=10 ", 30);
@@ -501,6 +502,20 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
         cout << "*** Start HLS video ***" << endl;        
     }
 
+    if(isVideoOutputRTSP) {
+        snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
+videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
+h265parse ! shmsink socket-path=/tmp/h265.sock sync=true wait-for-connection=0 ", 30);
+        outRTSP.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
+        cout << endl;
+        cout << gstStr << endl;
+        cout << endl;
+        cout << "*** Start RTSP video ***" << endl;        
+
+        //system("./test-launch \"shmsrc socket-path=/tmp/h265.sock ! video/x-h264, stream-format=byte-stream, width=640, height=480, framerate=30/1 ! h264parse ! video/x-h264, stream-format=byte-stream ! rtph264pay pt=96 name=pay0 \"");
+    }
+
     videoOutputQueue.reset();
 
     steady_clock::time_point t1 = steady_clock::now();
@@ -508,7 +523,7 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
     try {
         while(1) {
             Mat frame = videoOutputQueue.pop();
-            if(isVideoOutputFile)
+            if(isVideoOutputFile) 
                 outFile.write(frame);
             if(isVideoOutputScreen)
                 outScreen.write(frame);
@@ -516,6 +531,8 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
                 outRTP.write(frame);
             if(isVideoOutputHLS)
                 outHLS.write(frame);
+            if(isVideoOutputRTSP)
+                outRTSP.write(frame);
             
             steady_clock::time_point t2 = steady_clock::now();
             double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
@@ -544,6 +561,11 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
             cout << endl;
             cout << "*** Stop HLS video ***" << endl;
             outHLS.release();
+        }
+        if(isVideoOutputRTSP) {
+            cout << endl;
+            cout << "*** Stop RTSP video ***" << endl;
+            outRTSP.release();
         }
     }    
 }
@@ -603,6 +625,7 @@ private:
     bool m_isVideoOutputFile;
     bool m_isVideoOutputRTP;
     bool m_isVideoOutputHLS;
+    bool m_isVideoOutputRTSP;
     bool m_isVideoOutputResult;
 
     string m_udpRemoteHost;
@@ -662,6 +685,7 @@ public:
         m_isVideoOutputFile(false), 
         m_isVideoOutputRTP(false), 
         m_isVideoOutputHLS(false),
+        m_isVideoOutputRTSP(false),
         m_isVideoOutputResult(false),
         m_udpRemotePort(4999), m_rtpRemotePort(5000),
         m_mog2_threshold(16),
@@ -992,6 +1016,11 @@ public:
                     m_isVideoOutputHLS = true;
                 else
                     m_isVideoOutputHLS = false;
+            } else if(it->first == "video.output.rtsp") {
+                if(it->second == "yes" || it->second == "1")
+                    m_isVideoOutputRTSP = true;
+                else
+                    m_isVideoOutputRTSP = false;
             } else if(it->first == "video.output.result") {
                 if(it->second == "yes" || it->second == "1")
                     m_isVideoOutputResult = true;
@@ -1039,6 +1068,10 @@ public:
         return m_isVideoOutputHLS;
     }
 
+    inline bool IsVideoOutputRTSP() const {
+        return m_isVideoOutputRTSP;
+    }
+
     const char *UdpRemoteHost() {
         if(m_udpRemoteHost.empty())
             return 0;
@@ -1050,7 +1083,7 @@ public:
     }
 
     inline bool IsVideoOutput() const {
-        return (m_isVideoOutputScreen || m_isVideoOutputFile || m_isVideoOutputRTP || m_isVideoOutputHLS);
+        return (m_isVideoOutputScreen || m_isVideoOutputFile || m_isVideoOutputRTP || m_isVideoOutputHLS || m_isVideoOutputRTSP);
     }
 
     inline bool IsVideoOutputResult() const {
@@ -1387,7 +1420,7 @@ static void OnPushButton(F3xBase & fb)
         if(fb.IsVideoOutput())
             voThread = thread(&VideoOutputThread, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), 
                 fb.IsVideoOutputRTP(), fb.RtpRemoteHost(), fb.RtpRemotePort(), 
-                fb.IsVideoOutputHLS(), CAMERA_WIDTH, CAMERA_HEIGHT);
+                fb.IsVideoOutputHLS(), fb.IsVideoOutputRTSP(),CAMERA_WIDTH, CAMERA_HEIGHT);
     }
 }
 
