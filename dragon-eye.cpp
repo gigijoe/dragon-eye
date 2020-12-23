@@ -386,9 +386,13 @@ void FrameQueue::cancel()
 
 void FrameQueue::push(cv::Mat const & image)
 {
+#if 0
     while(queue_.size() >= 3) /* Prevent memory overflow ... */
         return; /* Drop frame */
-
+#else
+    if(queue_.size() >= 3) /* Prevent memory overflow ... */
+        queue_.clear();
+#endif
     std::unique_lock<std::mutex> mlock(mutex_);
     queue_.push(image);
     cond_.notify_one();
@@ -430,10 +434,6 @@ typedef struct {
     int numberFrames;
     GstClockTime timestamp;
 } RtspServerContext;
-
-// should be private data of c++ class
-static int numberFrames = 0;
-static Mat lastFrame;
 
 /* called when we need to give data to appsrc */
 static void
@@ -500,8 +500,7 @@ media_configure (GstRTSPMediaFactory * factory, GstRTSPMedia * media, gpointer u
 
     ctx = g_new0 (RtspServerContext, 1);
     ctx->timestamp = 0;
-    //ctx->lastFrame = &lastFrame;
-    ctx->numberFrames = numberFrames;
+    ctx->numberFrames = 0;
 
     /* make sure ther datais freed when the media is gone */
     g_object_set_data_full (G_OBJECT (media), "my-extra-data", ctx, (GDestroyNotify) g_free);
@@ -535,7 +534,7 @@ int gst_rtsp_server_init()
     GstRTSPMediaFactory *factory;
 
     char *args[] = {
-        (char*)"dragon-eye",
+        (char*)"gst-rtsp-server",
         NULL
     };
     int argv = 0;
