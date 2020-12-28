@@ -386,7 +386,7 @@ void FrameQueue::cancel()
 
 void FrameQueue::push(cv::Mat const & image)
 {
-#if 0
+#if 1
     while(queue_.size() >= 3) /* Prevent memory overflow ... */
         return; /* Drop frame */
 #else
@@ -1750,7 +1750,8 @@ int main(int argc, char**argv)
     Tracker tracker;
     Target *primaryTarget = 0;
     if(f3xBase.IsNewTargetRestriction())
-        tracker.NewTargetRestriction(Rect(cy - 200, cx - 200, 400, 200));
+        //tracker.NewTargetRestriction(Rect(cy - 200, cx - 200, 400, 200));
+        tracker.NewTargetRestriction(Rect(0, 180, 180, 360));
 
     cout << endl;
     cout << "### Press button to start object tracking !!!" << endl;
@@ -1857,12 +1858,15 @@ int main(int argc, char**argv)
 
         extract_moving_object(grayFrame, elementErode, elementDilate, erodeFilter, dilateFilter, gaussianFilter, bsModel, roiRect);
 
-        if(f3xBase.IsVideoOutput()) {
-            for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();rr++)
-                rectangle( outFrame, rr->tl(), rr->br(), Scalar(0, 255, 0), 2, 8, 0 );
-            if(f3xBase.IsNewTargetRestriction()) {
-                Rect nr = tracker.NewTargetRestriction();
-                rectangle( outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
+        if(f3xBase.IsVideoOutputResult()) {
+            if(f3xBase.IsVideoOutput()) {
+                for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();rr++)
+                    rectangle( outFrame, rr->tl(), rr->br(), Scalar(0, 255, 0), 2, 8, 0 );
+                if(f3xBase.IsNewTargetRestriction()) {
+                    Rect nr = tracker.NewTargetRestriction();
+                    rectangle( outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
+                    writeText( outFrame, "New Target Restriction Area", Point(0, 180));
+                }
             }
         }
 
