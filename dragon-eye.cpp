@@ -102,6 +102,8 @@ typedef enum { BASE_UNKNOWN, BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseT
 static bool bShutdown = false;
 static bool bPause = true;
 
+static bool bRestart = false;
+static bool bStop = false;
 /*
 *
 */
@@ -351,6 +353,8 @@ public:
     inline list< Target > & TargetList() { return m_targets; }
 };
 
+static Tracker tracker;
+
 /*
 *
 */
@@ -526,7 +530,18 @@ gboolean TerminationSignalCallback(gpointer data) {
   return false;
 }
 
-int gst_rtsp_server_init()
+// This callback will be inovked when this process receives SIGINT or SIGTERM.
+gboolean HangupSignalCallback(gpointer data) {
+  cout << "Received a signal to terminate the daemon";
+  GMainLoop* loop = reinterpret_cast<GMainLoop*>(data);
+  g_main_loop_quit(loop);
+  // This function can return false to remove this signal handler as we are
+  // quitting the main loop anyway.
+
+  return false;
+}
+
+int gst_rtsp_server_task()
 {
     GMainLoop *loop;
     GstRTSPServer *server;
@@ -544,7 +559,7 @@ int gst_rtsp_server_init()
 
     // Set up a signal handler for handling SIGINT and SIGTERM.
     g_unix_signal_add(SIGINT, TerminationSignalCallback, loop);
-    //g_unix_signal_add(SIGTERM, TerminationSignalCallback, loop);
+    g_unix_signal_add(SIGHUP, HangupSignalCallback, loop);
     
     /* create a server instance */
     server = gst_rtsp_server_new ();
@@ -589,7 +604,7 @@ static thread rtspServerThread;
 *
 */
 
-void VideoOutputThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, 
+void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, 
     bool isVideoOutputRTP, const char *rtpRemoteHost, uint16_t rtpRemotePort, 
     bool isVideoOutputHLS, bool isVideoOutputRTSP, int width, int height)
 {    
@@ -602,26 +617,35 @@ void VideoOutputThread(BaseType_t baseType, bool isVideoOutputScreen, bool isVid
     VideoWriter outHLS;
     VideoWriter outRTSP;
 
-    char filePath[64];
-    int videoOutoutIndex = 0;
-    while(videoOutoutIndex < 1000) {
-        snprintf(filePath, 64, "%s/%s%c%03d.mkv", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
-        FILE *fp = fopen(filePath, "rb");
-        if(fp) { /* file exist ... */
-            fclose(fp);
-            videoOutoutIndex++;
-        } else
-            break; /* File doesn't exist. OK */
-    }
-
     if(isVideoOutputFile) {
-    /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
-#if 1
+#if 0        
+        char filePath[64];
+        int videoOutoutIndex = 0;
+        while(videoOutoutIndex < 1000) {
+            snprintf(filePath, 64, "%s/%s%c%03d.mkv", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+            FILE *fp = fopen(filePath, "rb");
+            if(fp) { /* file exist ... */
+                fclose(fp);
+                videoOutoutIndex++;
+            } else
+                break; /* File doesn't exist. OK */
+        }
+        /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
+
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
                    nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
             30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
-#else /* NOT work, due to tee */
+#endif
+#if 1
+        /* 90 secs duration, maximum 100 files */
+        snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
+                   videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
+                   nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! \
+                   splitmuxsink muxer=matroskamux sink=filesink location=%s/%s%c%%03d.mkv max-size-time=90000000000 max-files=100 async-finalize=true async-handling=true ", 
+            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B');
+#endif
+#if 0 /* NOT work, due to tee */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! \
@@ -685,7 +709,7 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
     }
 
     if(isVideoOutputRTSP) {
-        rtspServerThread = thread(&gst_rtsp_server_init);
+        rtspServerThread = thread(&gst_rtsp_server_task);
     }
 
     videoOutputQueue.reset();
@@ -705,12 +729,13 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
                 outHLS.write(frame);
             //if(isVideoOutputRTSP)
             //    outRTSP.write(frame);
-            
+#if 0            
             steady_clock::time_point t2 = steady_clock::now();
             double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
 
             if(isVideoOutputFile && secs >= VIDEO_FILE_OUTPUT_DURATION)
                 videoOutputQueue.cancel(); /* Reach duration limit, stop record video */
+#endif
         }
     } catch (FrameQueue::cancelled & /*e*/) {
         // Nothing more to process, we're done
@@ -738,7 +763,9 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
             cout << endl;
             cout << "*** Stop RTSP video ***" << endl;
             //outRTSP.release();
-            rtspServerThread.join();
+            kill(getpid(), SIGHUP);
+            if(rtspServerThread.joinable())
+                rtspServerThread.join();
         }
     }    
 }
@@ -754,6 +781,19 @@ static bool IsValidateIpAddress(const string & ipAddress)
     return result != 0;
 }
 
+static void ParseConfigString(string & line, vector<pair<string, string> > & cfg)
+{
+    auto delimiterPos = line.find("=");
+    auto name = line.substr(0, delimiterPos);
+    auto value = line.substr(delimiterPos + 1);
+
+    name = std::regex_replace(name, std::regex(" +$"), ""); /* Remove tail space */
+    value = std::regex_replace(value, std::regex("^ +"), ""); /* Remove leading space */
+
+    //cfg.insert(pair<string, string>(name, value));
+    cfg.push_back(make_pair(name, value));
+}
+
 static size_t ParseConfigFile(char *file, vector<pair<string, string> > & cfg)
 {
     ifstream input(file);
@@ -763,18 +803,21 @@ static size_t ParseConfigFile(char *file, vector<pair<string, string> > & cfg)
             line = std::regex_replace(line, std::regex("^ +| +$|( ) +"), "$1"); /* Strip leading & tail space */
             if(line[0] == '#' || line.empty())
                     continue;
-            
-            auto delimiterPos = line.find("=");
-            auto name = line.substr(0, delimiterPos);
-            auto value = line.substr(delimiterPos + 1);
-
-            name = std::regex_replace(name, std::regex(" +$"), ""); /* Remove tail space */
-            value = std::regex_replace(value, std::regex("^ +"), ""); /* Remove leading space */
-
-            //cfg.insert(pair<string, string>(name, value));
-            cfg.push_back(make_pair(name, value));
+            ParseConfigString(line, cfg);
         }
         input.close();
+    }
+    return cfg.size();
+}
+
+static size_t ParseConfigStream(istringstream & iss, vector<pair<string, string> > & cfg)
+{
+    string line;
+    while(getline(iss, line)) {
+        line = std::regex_replace(line, std::regex("^ +| +$|( ) +"), "$1"); /* Strip leading & tail space */
+        if(line[0] == '#' || line.empty())
+            continue;
+        ParseConfigString(line, cfg);
     }
     return cfg.size();
 }
@@ -783,11 +826,216 @@ static size_t ParseConfigFile(char *file, vector<pair<string, string> > & cfg)
 *
 */
 
+class Camera {
+private:
+    VideoCapture cap;
+    char gstStr[STR_SIZE];
+
+public:
+    int sensor_id = 0;
+    int wbmode = 0;
+    int tnr_mode = 1;
+    int tnr_strength = -1;
+    int ee_mode = 1;
+    int ee_strength = -1;
+    string gainrange; /* Default null */
+    string ispdigitalgainrange; /* Default null */
+    string exposuretimerange; /* Default null */
+    int exposurecompensation = 0;
+    int exposurethreshold = 255;
+//    int width, height;
+
+    Camera() : wbmode(0), tnr_mode(-1), tnr_strength(-1), ee_mode(1), ee_strength(-1), 
+        gainrange("1 16"), ispdigitalgainrange("1 8"), exposuretimerange("5000000 10000000"),
+        exposurecompensation(0) {
+    }
+
+    bool Open() {
+        if(cap.isOpened())
+            return true;
+/* Reference : nvarguscamerasrc.txt */
+/* export GST_DEBUG=2 to show debug message */
+#if 0
+    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=0 wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=0 ! \
+video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
+        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+#else
+        snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
+video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
+            sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
+            CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+#endif
+/*
+        snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video1 ! \
+video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
+            CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+*/
+        cout << endl;
+        cout << gstStr << endl;
+        cout << endl;
+
+        if(!cap.open(gstStr, cv::CAP_GSTREAMER)) {
+            cout << endl;
+            cout << "!!! Could not open video" << endl;
+            return false;
+        }
+
+        return true;
+    }
+
+    void Close() {
+        if(cap.isOpened())
+            cap.release();
+    }
+
+    inline bool Read(OutputArray & a) { return cap.read(a); }
+
+    void ApplyConfig(vector<pair<string, string> > & cfg)
+    {
+        cout << endl;
+        cout << "### Camera config" << endl; 
+        vector<pair<string, string> >::iterator it;
+        for (it=cfg.begin(); it!=cfg.end(); it++) {
+            cout << it->first << " = " << it->second << endl;
+            if(it->first == "sensor-id")
+                sensor_id = stoi(it->second);
+            else if(it->first == "wbmode")
+                wbmode = stoi(it->second);
+            else if(it->first == "tnr-mode")
+                tnr_mode = stoi(it->second);
+            else if(it->first == "tnr-strength")
+                tnr_strength = stoi(it->second);
+            else if(it->first == "ee-mode")
+                ee_mode = stoi(it->second);
+            else if(it->first == "ee-strength")
+                ee_strength = stoi(it->second);
+            else if(it->first == "gainrange")
+                gainrange = it->second;
+            else if(it->first == "ispdigitalgainrange")
+                ispdigitalgainrange = it->second;
+            else if(it->first == "exposuretimerange")
+                exposuretimerange = it->second;
+            else if(it->first == "exposurecompensation")
+                exposurecompensation = stoi(it->second);
+            else if(it->first == "exposurethreshold")
+                exposurethreshold = stoi(it->second);
+        }
+        cout << endl;
+    }
+
+    void LoadConfig() {
+        char str[STR_SIZE];
+        snprintf(str, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
+        vector<pair<string, string> > cfg;
+        ParseConfigFile(str, cfg);
+        ApplyConfig(cfg);
+    }
+
+    void SaveConfig(string s) {
+        char fn[STR_SIZE];
+        snprintf(fn, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
+        ofstream out(fn);
+        if(out.is_open()) {
+            out << s;
+            out.close();
+        }
+    }
+
+    bool UpdateExposure() {
+        bool isCameraOpened = cap.isOpened(); /* Used to keep camera open / close status */
+
+        const char *exposureTimeRange[5] = {
+            "\"5000000 10000000\"",
+            "\"3000000 8000000\"",
+            "\"1000000 5000000\"",
+            "\"500000 2000000\"",
+            "\"250000 1000000\""
+        };
+
+        if(exposurethreshold >= 255)
+            return true;
+
+        if(isCameraOpened)
+            cap.release();
+
+        vector<pair<string, float> > exposure_brightness;
+
+        for(int i=0;i<5;i++) {
+            snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
+video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
+                sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposureTimeRange[i], exposurecompensation,
+                CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+
+            cout << endl;
+            cout << gstStr << endl;
+            cout << endl;
+
+            if(!cap.open(gstStr, cv::CAP_GSTREAMER)) {
+                cout << endl;
+                cout << "!!! Could not open video" << endl;
+                return false;
+            }
+
+            Mat capFrame;
+            int meanCount = 30;
+            while(meanCount-- > 0) { /* Drop first 30 frames */
+                cap.read(capFrame);
+            }
+
+            meanCount = 3;
+            float meanValue = 0;
+            while(meanCount-- > 0) {
+                cap.read(capFrame);
+                Mat grayFrame;
+                cvtColor(capFrame, grayFrame, COLOR_BGR2GRAY);
+                Scalar v = mean(grayFrame);
+                meanValue += v.val[0];
+            }
+            meanValue /= 3;
+            
+            if(isCameraOpened == false)
+                cap.release();
+
+            //cout << "Exposure time range - " << exposureTimeRange[i] << " : Brightness - " << meanValue << endl;
+            exposure_brightness.push_back(make_pair(exposureTimeRange[i], meanValue));
+        }
+
+        vector<pair<string, float> >::iterator it;
+        for (it=exposure_brightness.begin(); it!=exposure_brightness.end(); it++) {
+            cout << "Exposure time range - " << it->first << " : Brightness - " << it->second << endl;
+        }
+
+        for (it=exposure_brightness.begin(); it!=exposure_brightness.end(); it++) {
+            if(it->second <= exposurethreshold) {
+                exposuretimerange = it->first;
+                cout << endl;
+                cout << "### Set exposure time range - " << it->first <<  endl;
+                break;
+            }
+        }
+
+        return true;
+    }
+};
+
+static Camera camera; 
+
+/*
+*
+*/
+
+void UdpServerTask();
+
+static Ptr<cuda::BackgroundSubtractorMOG2> bsModel;
+
 class F3xBase {
 private:
     int m_ttyFd, m_udpSocket;
     BaseType_t m_baseType;
-    bool m_isBaseRemoteControl;
 
     jetsonNanoGPIONumber m_redLED, m_greenLED, m_blueLED, m_relay;
     jetsonNanoGPIONumber m_videoOutputScreenSwitch, m_videoOutputFileSwitch;
@@ -803,11 +1051,20 @@ private:
 
     string m_udpRemoteHost;
     uint16_t m_udpRemotePort;
+
+    uint16_t m_udpLocalPort;
+
     string m_rtpRemoteHost;
     uint16_t m_rtpRemotePort;
 
     uint8_t m_mog2_threshold; /* 0 ~ 64 / Most senstive is 0 / Default 16 */
     bool m_isNewTargetRestriction;
+
+    thread m_udpServerThread;
+    bool m_bUdpServerRun;
+
+    unsigned int m_srcIp;
+    unsigned short m_srcPort;
 
     int SetupTTY(int fd, int speed, int parity) {
         struct termios tty;
@@ -849,7 +1106,7 @@ private:
     }
 
 public:
-    F3xBase() : m_ttyFd(0), m_udpSocket(0), m_baseType(BASE_A), m_isBaseRemoteControl(false),
+    F3xBase() : m_ttyFd(0), m_udpSocket(0), m_baseType(BASE_A),
         m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51),
         m_videoOutputScreenSwitch(gpio19), m_videoOutputFileSwitch(gpio20),
         m_baseSwitch(gpio12), m_videoOutputResultSwitch(gpio13), m_pushButton(gpio18),
@@ -860,9 +1117,16 @@ public:
         m_isVideoOutputHLS(false),
         m_isVideoOutputRTSP(false),
         m_isVideoOutputResult(false),
-        m_udpRemotePort(4999), m_rtpRemotePort(5000),
+        m_udpRemotePort(4999), m_udpLocalPort(4999), m_rtpRemotePort(5000),
         m_mog2_threshold(16),
-        m_isNewTargetRestriction(false) {
+        m_isNewTargetRestriction(false),
+        m_bUdpServerRun(false),
+        m_srcIp(0), m_srcPort(0) {
+    }
+
+    ~F3xBase() {
+        if(m_udpServerThread.joinable())
+            m_udpServerThread.detach();
     }
 
     void SetupGPIO() {
@@ -964,14 +1228,14 @@ public:
         memset((char*) &(addr),0, sizeof((addr)));
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        addr.sin_port = htons(m_udpRemotePort);
+        addr.sin_port = htons(m_udpLocalPort);
 
         if(bind(sockfd,(struct sockaddr*)&addr, sizeof(addr)) != 0) {
             switch(errno) {
             case 0:
                 printf("Could not bind socket\n");
             case EADDRINUSE:
-                printf("Port %u for receiving UDP is in use\n", m_udpRemotePort);
+                printf("Port %u for receiving UDP is in use\n", m_udpLocalPort);
                 break;
             case EADDRNOTAVAIL:
                 printf("Cannot assign requested address\n");
@@ -1024,8 +1288,8 @@ public:
         write(m_ttyFd, data, 1);
     }
 
-    size_t WriteUdpSocket(uint8_t *data, size_t size) {
-        if(!m_udpSocket)
+    size_t WriteUdpSocket(const uint8_t *data, size_t size) {
+        if(!m_udpSocket || m_srcIp == 0 || m_srcPort == 0)
             return 0;
         struct sockaddr_in to;
         int toLen = sizeof(to);
@@ -1045,6 +1309,24 @@ public:
         return s;
     }
 
+    size_t WriteSourceUdpSocket(const uint8_t *data, size_t size) {
+        if(!m_udpSocket)
+            return 0;
+        struct sockaddr_in to;
+        int toLen = sizeof(to);
+        memset(&to, 0, toLen);
+        
+        to.sin_family = AF_INET;
+        to.sin_port = htons(m_srcPort);
+        to.sin_addr.s_addr = htonl(m_srcIp);
+        
+        //printf("Write to %s:%u ...\n", m_udpRemoteHost.c_str(), m_udpRemotePort);
+        
+        int s = sendto(m_udpSocket, data, size, 0,(struct sockaddr*)&to, toLen);
+
+        return s;
+    }
+#if 0
     void TriggerUdpSocket(bool newTrigger) {
         static uint8_t serNo = 0x3f;
         uint8_t data[1];
@@ -1065,8 +1347,20 @@ public:
         }        
         WriteUdpSocket(data, 1);
     }
-
-    void UpdateHwSwitch() {
+#else
+    void TriggerUdpSocket(bool newTrigger) {
+        static uint8_t serNo = 0x3f;
+        if(newTrigger) { /* It's NEW trigger */
+            if(++serNo > 0x3f)
+                serNo = 0;
+        }
+        //const char trigger[] = "#Trigger";
+        string trigger("#Trigger:");
+        trigger += std::to_string(serNo);
+        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(trigger.c_str()), trigger.size());
+    }
+#endif
+    void ApplyHwSwitch() {
         cout << endl;
         cout << "### H/W switch" << endl; 
 
@@ -1105,13 +1399,8 @@ public:
         printf("### Video output result : %s\n", m_isVideoOutputResult ? "Enable" : "Disable");
     } 
 
-    void UpdateSystemConfig() {
-        char fn[STR_SIZE];
-
-        snprintf(fn, STR_SIZE, "%s/system.config", CONFIG_FILE_DIR);
-        vector<pair<string, string> > cfg;
-        ParseConfigFile(fn, cfg);
-
+    void ApplySystemConfig(vector<pair<string, string> > & cfg)
+    {
         cout << endl;
         cout << "### System config" << endl; 
         vector<pair<string, string> >::iterator it;
@@ -1125,11 +1414,6 @@ public:
                     m_baseType = BASE_B;
                 else
                     m_baseType = BASE_UNKNOWN;
-            } else if(it->first == "base.remote.control") { /* Start or Pasue can be remote control */
-                if(it->second == "yes" || it->second == "1")
-                    m_isBaseRemoteControl = true;
-                else
-                    m_isBaseRemoteControl = false;
             } else if(it->first == "base.hwswitch") {
                 if(it->second == "yes" || it->second == "1")
                     m_isBaseHwSwitch = true;
@@ -1203,12 +1487,28 @@ public:
         }
     }
 
-    inline BaseType_t BaseType() const {
-        return m_baseType;
+    void LoadSystemConfig() {
+        char fn[STR_SIZE];
+
+        snprintf(fn, STR_SIZE, "%s/system.config", CONFIG_FILE_DIR);
+        vector<pair<string, string> > cfg;
+        if(ParseConfigFile(fn, cfg) > 0)
+            ApplySystemConfig(cfg);
     }
 
-    inline bool IsBaseRemoteControl() const {
-        return m_isBaseRemoteControl;
+    void SaveSystemConfig(string s) {
+        char fn[STR_SIZE];
+        snprintf(fn, STR_SIZE, "%s/system.config", CONFIG_FILE_DIR);
+        ofstream out;
+        out.open(fn);
+        if(out.is_open()) {
+            out << s;
+            out.close();
+        }
+    }
+
+    inline BaseType_t BaseType() const {
+        return m_baseType;
     }
 
     inline bool IsBaseHwSwitch() {
@@ -1311,6 +1611,7 @@ public:
         struct sockaddr_in from;
         int fromLen = sizeof(from);
         size_t originalSize = size;
+        memset(data, 0, size);
 #if 1
         int r = recvfrom(m_udpSocket,
                data,
@@ -1321,8 +1622,12 @@ public:
 #else
         int r = recv(m_udpSocket, data, originalSize, 0);
 #endif
-        if(r > 0)
+        if(r > 0) {
+            m_srcPort = ntohs(from.sin_port);
+            m_srcIp = ntohl(from.sin_addr.s_addr);
+
             return r;
+        }
         else if(r == -1) {
             switch(errno) {
                case ENOTSOCK:
@@ -1361,6 +1666,75 @@ public:
         gpioGetValue(m_pushButton, &gv);
         return gv;
     }
+
+    void UdpServerTask()
+    {
+        m_bUdpServerRun = true;
+        OpenUdpSocket();
+        while(m_bUdpServerRun) {
+            if(bShutdown)
+                break;
+            uint8_t data[1024];
+            size_t r = ReadUdpSocket(data, 1024, 20);
+            if(r > 0) {
+                string s = reinterpret_cast<char *>(data);
+                istringstream iss(s);
+                vector<pair<string, string> > cfg;
+                string line;
+                if(!getline(iss, line))
+                    continue;
+                line = std::regex_replace(line, std::regex("^ +| +$|( ) +"), "$1"); /* Strip leading & tail space */
+
+                const char ack[] = "#Ack";
+                const char started[] = "#Started";
+                const char stopped[] = "#Stopped";
+
+                if(line == "#SystemSettings") {
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
+                    if(ParseConfigStream(iss, cfg) > 0) {
+                        ApplySystemConfig(cfg);
+                        SaveSystemConfig(s);
+                    }
+                } else if(line == "#CameraSettings") {
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
+                    if(ParseConfigStream(iss, cfg) > 0) {
+                        camera.ApplyConfig(cfg);
+                        camera.SaveConfig(s);
+                    }
+                } else if(line == "#Start") {                    
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
+                    bRestart = true;
+                } else if(line == "#Stop") {
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
+                    bStop = true;
+                } else if(line == "#Status") {
+                    if(bPause) /* Stopped */
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
+                    else
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
+                } else if(line == "#BaseType") {
+                    const char baseTypeA[] = "#BaseTypeA";
+                    const char baseTypeB[] = "#BaseTypeB";
+                    if(m_baseType == BASE_A)
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(baseTypeA), strlen(baseTypeA));
+                    else if(m_baseType == BASE_B)
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(baseTypeB), strlen(baseTypeB));
+                }
+            }
+        }
+        CloseUdpSocket();
+    }
+
+    void StartUdpServer() {
+        m_udpServerThread = thread(&F3xBase::UdpServerTask, this);
+    }
+
+    void StopUdpServer() {
+        if(m_udpServerThread.joinable()) {
+            m_bUdpServerRun = false;
+            m_udpServerThread.join();
+        }
+    }
 };
 
 static F3xBase f3xBase; 
@@ -1369,225 +1743,61 @@ static F3xBase f3xBase;
 *
 */
 
-class Camera {
-private:
-    VideoCapture cap;
-    char gstStr[STR_SIZE];
+static thread videoOutputThread;
 
-public:
-    int sensor_id = 0;
-    int wbmode = 0;
-    int tnr_mode = 1;
-    int tnr_strength = -1;
-    int ee_mode = 1;
-    int ee_strength = -1;
-    string gainrange; /* Default null */
-    string ispdigitalgainrange; /* Default null */
-    string exposuretimerange; /* Default null */
-    int exposurecompensation = 0;
-    int exposurethreshold = 255;
-//    int width, height;
+static void Start(F3xBase & fb)
+{
+    if(fb.IsBaseHwSwitch()) /* Overwrite config by HW switch */
+        fb.ApplyHwSwitch();
 
-    Camera() : wbmode(0), tnr_mode(-1), tnr_strength(-1), ee_mode(1), ee_strength(-1), 
-        gainrange("1 16"), ispdigitalgainrange("1 8"), exposuretimerange("5000000 10000000"),
-        exposurecompensation(0) {
+    if(fb.IsNewTargetRestriction())
+        //tracker.NewTargetRestriction(Rect(cy - 200, cx - 200, 400, 200));
+        tracker.NewTargetRestriction(Rect(0, 180, 180, 360));
+    else
+        tracker.NewTargetRestriction(Rect());
+
+    bsModel->setVarThreshold(fb.Mog2Threshold());
+
+    camera.UpdateExposure();
+
+    cout << endl;
+    cout << "*** Object tracking started ***" << endl;
+
+    camera.Open();
+
+    if(fb.IsVideoOutput())
+        videoOutputThread = thread(&VideoOutputTask, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), 
+            fb.IsVideoOutputRTP(), fb.RtpRemoteHost(), fb.RtpRemotePort(), 
+            fb.IsVideoOutputHLS(), fb.IsVideoOutputRTSP(),CAMERA_WIDTH, CAMERA_HEIGHT);
+
+    fb.GreenLed(off);
+
+    bPause = false;
+}
+
+static void Stop(F3xBase & fb)
+{
+    f3xBase.GreenLed(on); /* On while pause */
+
+    cout << endl;
+    cout << "*** Object tracking stoped ***" << endl;
+    
+    if(fb.IsVideoOutput()) {
+        videoOutputQueue.cancel();
+        if(videoOutputThread.joinable())
+            videoOutputThread.join();
     }
+    camera.Close();
 
-    bool Open() {
-        if(cap.isOpened())
-            return true;
-/* Reference : nvarguscamerasrc.txt */
-/* export GST_DEBUG=2 to show debug message */
-#if 0
-    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=0 wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=0 ! \
-video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
-        CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-#else
-        snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
-video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
-            sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
-            CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-#endif
-/*
-        snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video1 ! \
-video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
-            CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-*/
-        cout << endl;
-        cout << gstStr << endl;
-        cout << endl;
-
-        if(!cap.open(gstStr, cv::CAP_GSTREAMER)) {
-            cout << endl;
-            cout << "!!! Could not open video" << endl;
-            return false;
-        }
-
-        return true;
-    }
-
-    void Close() {
-        if(cap.isOpened())
-            cap.release();
-    }
-
-    inline bool Read(OutputArray & a) { return cap.read(a); }
-
-    void UpdateCameraConfig() {
-        char str[STR_SIZE];
-        snprintf(str, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
-        vector<pair<string, string> > cfg;
-        ParseConfigFile(str, cfg);
-
-        cout << endl;
-        cout << "### Camera config" << endl; 
-        vector<pair<string, string> >::iterator it;
-        for (it=cfg.begin(); it!=cfg.end(); it++) {
-            cout << it->first << " = " << it->second << endl;
-            if(it->first == "sensor-id")
-                sensor_id = stoi(it->second);
-            else if(it->first == "wbmode")
-                wbmode = stoi(it->second);
-            else if(it->first == "tnr-mode")
-                tnr_mode = stoi(it->second);
-            else if(it->first == "tnr-strength")
-                tnr_strength = stoi(it->second);
-            else if(it->first == "ee-mode")
-                ee_mode = stoi(it->second);
-            else if(it->first == "ee-strength")
-                ee_strength = stoi(it->second);
-            else if(it->first == "gainrange")
-                gainrange = it->second;
-            else if(it->first == "ispdigitalgainrange")
-                ispdigitalgainrange = it->second;
-            else if(it->first == "exposuretimerange")
-                exposuretimerange = it->second;
-            else if(it->first == "exposurecompensation")
-                exposurecompensation = stoi(it->second);
-            else if(it->first == "exposurethreshold")
-                exposurethreshold = stoi(it->second);
-        }
-        cout << endl;
-    }
-
-    bool UpdateExposure() {
-        const char *exposureTimeRange[5] = {
-            "\"5000000 10000000\"",
-            "\"3000000 8000000\"",
-            "\"1000000 5000000\"",
-            "\"500000 2000000\"",
-            "\"250000 1000000\""
-        };
-
-        if(cap.isOpened())
-            cap.release();
-
-        if(exposurethreshold >= 255)
-            return true;
-
-        vector<pair<string, float> > exposure_brightness;
-
-        for(int i=0;i<5;i++) {
-            snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
-video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
-                sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposureTimeRange[i], exposurecompensation,
-                CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
-
-            cout << endl;
-            cout << gstStr << endl;
-            cout << endl;
-
-            if(!cap.open(gstStr, cv::CAP_GSTREAMER)) {
-                cout << endl;
-                cout << "!!! Could not open video" << endl;
-                return false;
-            }
-
-            Mat capFrame;
-            int meanCount = 30;
-            while(meanCount-- > 0) { /* Drop first 30 frames */
-                cap.read(capFrame);
-            }
-
-            meanCount = 3;
-            float meanValue = 0;
-            while(meanCount-- > 0) {
-                cap.read(capFrame);
-                Mat grayFrame;
-                cvtColor(capFrame, grayFrame, COLOR_BGR2GRAY);
-                Scalar v = mean(grayFrame);
-                meanValue += v.val[0];
-            }
-            meanValue /= 3;
-            
-            cap.release();
-
-            //cout << "Exposure time range - " << exposureTimeRange[i] << " : Brightness - " << meanValue << endl;
-            exposure_brightness.push_back(make_pair(exposureTimeRange[i], meanValue));
-        }
-
-        vector<pair<string, float> >::iterator it;
-        for (it=exposure_brightness.begin(); it!=exposure_brightness.end(); it++) {
-            cout << "Exposure time range - " << it->first << " : Brightness - " << it->second << endl;
-        }
-
-        for (it=exposure_brightness.begin(); it!=exposure_brightness.end(); it++) {
-            if(it->second <= exposurethreshold) {
-                exposuretimerange = it->first;
-                cout << endl;
-                cout << "### Set exposure time range - " << it->first <<  endl;
-                break;
-            }
-        }
-
-        return true;
-    }
-};
-
-static Camera camera; 
-
-/*
-*
-*/
-
-static thread voThread;
-static thread udpThread;
+    bPause = true;
+}
 
 static void OnPushButton(F3xBase & fb) 
 {
-    bPause = !bPause;
-
-    if(bPause) {
-        cout << endl;
-        cout << "*** Object tracking stoped ***" << endl;
-
-        fb.GreenLed(off);
-        camera.UpdateExposure();
-        fb.GreenLed(on);
-        
-        if(fb.IsVideoOutput()) {
-            videoOutputQueue.cancel();
-            voThread.join();
-        }
-    } else { /* Restart, record new video */
-        fb.UpdateSystemConfig();
-        if(fb.IsBaseHwSwitch()) /* Overwrite config by HW switch */
-            fb.UpdateHwSwitch();
-
-        cout << endl;
-        cout << "*** Object tracking started ***" << endl;
-
-        camera.Open();
-
-        if(fb.IsVideoOutput())
-            voThread = thread(&VideoOutputThread, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), 
-                fb.IsVideoOutputRTP(), fb.RtpRemoteHost(), fb.RtpRemotePort(), 
-                fb.IsVideoOutputHLS(), fb.IsVideoOutputRTSP(),CAMERA_WIDTH, CAMERA_HEIGHT);
-    }
+    if(bPause)
+        Start(fb);
+    else /* Restart, record new video */
+        Stop(fb);
 }
 
 static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect> & roiRect, int y_offset = 0)
@@ -1636,29 +1846,23 @@ static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect>
     }    
 }
 
-void extract_moving_object(Mat & frame, 
+static void extract_moving_object(Mat & frame, 
     Mat & elementErode, Mat & elementDilate, 
-    Ptr<cuda::Filter> & erodeFilter, Ptr<cuda::Filter> & dilateFilter, Ptr<cuda::Filter> & gaussianFilter, 
+    Ptr<cuda::Filter> & erodeFilter, Ptr<cuda::Filter> & dilateFilter, 
     Ptr<cuda::BackgroundSubtractorMOG2> & bsModel, 
     list<Rect> & roiRect, int y_offset = 0)
 {
     Mat foregroundFrame;
     cuda::GpuMat gpuFrame;
-    cuda::GpuMat gpuGaussianFilterFrame;
     cuda::GpuMat gpuForegroundFrame;
-    cuda::GpuMat gpuErodeFrame;
-    cuda::GpuMat gpuDilateFrame;
 
     gpuFrame.upload(frame); 
     // pass the frame to background bsGrayModel
-#if 0    
-    gaussianFilter->apply(gpuFrame, gpuGaussianFilterFrame);
-    bsModel->apply(gpuGaussianFilterFrame, gpuForegroundFrame, 0.05);
-#else
     bsModel->apply(gpuFrame, gpuForegroundFrame, 0.05);
-#endif    
     //cuda::threshold(gpuForegroundFrame, gpuForegroundFrame, 10.0, 255.0, THRESH_BINARY);
 #if 0 /* Run with GPU */
+    cuda::GpuMat gpuErodeFrame;
+    cuda::GpuMat gpuDilateFrame;
     erodeFilter->apply(gpuForegroundFrame, gpuErodeFrame);
     dilateFilter->apply(gpuErodeFrame, gpuDilateFrame);
     gpuDilateFrame.download(foregroundFrame);
@@ -1682,7 +1886,7 @@ void sig_handler(int signo)
         bShutdown = true;
     } else if(signo == SIGHUP) {
         printf("SIGHUP\n");
-        OnPushButton(f3xBase);
+        bRestart = true;
     }
 }
 
@@ -1711,14 +1915,14 @@ int main(int argc, char**argv)
     cuda::printShortCudaDeviceInfo(cuda::getDevice());
     std::cout << cv::getBuildInformation() << std::endl;
 
-    f3xBase.UpdateSystemConfig();
+    f3xBase.LoadSystemConfig();
     if(f3xBase.IsBaseHwSwitch()) /* Overwrite config by HW switch */
-        f3xBase.UpdateHwSwitch();
+        f3xBase.ApplyHwSwitch();
     f3xBase.SetupGPIO();
     f3xBase.OpenTty();
-    f3xBase.OpenUdpSocket();
+    f3xBase.StartUdpServer();
 
-    camera.UpdateCameraConfig();
+    camera.LoadConfig();
     if(!camera.UpdateExposure())
         return 1;
 
@@ -1739,36 +1943,41 @@ int main(int argc, char**argv)
     Ptr<cuda::Filter> dilateFilter = cuda::createMorphologyFilter(MORPH_DILATE, CV_8UC1, elementDilate);
 
     /* background history count, varThreshold, shadow detection */
-    Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
+    //Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
+    bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
     //cout << bsModel->getVarInit() << " / " << bsModel->getVarMax() << " / " << bsModel->getVarMax() << endl;
     /* Default variance of each gaussian component 15 / 75 / 75 */ 
     bsModel->setVarInit(15);
     bsModel->setVarMax(20);
     bsModel->setVarMin(4);
-    Ptr<cuda::Filter> gaussianFilter = cuda::createGaussianFilter(CV_8UC1, CV_8UC1, Size(5, 5), 0);
-
-    Tracker tracker;
-    Target *primaryTarget = 0;
-    if(f3xBase.IsNewTargetRestriction())
-        //tracker.NewTargetRestriction(Rect(cy - 200, cx - 200, 400, 200));
-        tracker.NewTargetRestriction(Rect(0, 180, 180, 360));
 
     cout << endl;
     cout << "### Press button to start object tracking !!!" << endl;
 
     double fps = 0;
-
     //high_resolution_clock::time_point t1(high_resolution_clock::now());
     steady_clock::time_point t1(steady_clock::now());
-
     uint64_t loopCount = 0;
-#if 1
-    if(bPause)
-        OnPushButton(f3xBase);
-#endif
+
+    if(bPause == false)
+        Start(f3xBase);
+
     while(1) {
         if(bShutdown)
             break;
+
+        if(bRestart) { /* Start object detection */
+            if(bPause == false) 
+                Stop(f3xBase);
+            Start(f3xBase);
+            bRestart = false;
+        }
+
+        if(bStop) { /* Stop object detection */
+            if(bPause == false) 
+                Stop(f3xBase);
+            bStop = false;
+        }
 
         static unsigned int vPushButton = 1;
         unsigned int gv = f3xBase.PushButton();
@@ -1779,44 +1988,7 @@ int main(int argc, char**argv)
             }
         }
         vPushButton = gv;
-
-        if(f3xBase.IsBaseRemoteControl()) {
-            uint8_t data[1];
-            if(f3xBase.ReadTty(data, 1)) {
-                if(f3xBase.BaseType() == BASE_A) {
-                    if((data[0] & 0xc0) == 0x80) {
-                        uint8_t v = data[0] & 0x3f;
-                        if(v == 0x00) { /* BaseA Off - 10xx xxx0 */
-                            if(bPause == false) {
-                                OnPushButton(f3xBase);
-                                loopCount = 0;
-                            }
-                        } else if(v == 0x01) { /* BaseA On - 10xx xxx1 */
-                            if(bPause == true) {
-                                OnPushButton(f3xBase);
-                                loopCount = 0;
-                            }
-                        }
-                    }
-                } else if(f3xBase.BaseType() == BASE_B) {
-                    if((data[0] & 0xc0) == 0xc0) {
-                        uint8_t v = data[0] & 0x3f;
-                        if(v == 0x00) { /* BaseB Off - 11xx xxx0 */
-                            if(bPause == false) {
-                                OnPushButton(f3xBase);
-                                loopCount = 0;
-                            }
-                        } else if(v == 0x01) { /* BaseB On - 11xx xxx1 */
-                            if(bPause == true) {
-                                OnPushButton(f3xBase);
-                                loopCount = 0;
-                            }
-                        }
-                    }
-                }           
-            }
-        }
-        
+     
         loopCount++; /* Increase loop count */
 
         if(bPause) {
@@ -1826,7 +1998,7 @@ int main(int argc, char**argv)
             if(f3xBase.IsVideoOutputFile())
                 f3xBase.BlueLed(on);
 
-            usleep(10000); /* Wait 10ms */
+            usleep(20000); /* Wait 20ms */
             continue;
         }
 
@@ -1856,7 +2028,7 @@ int main(int argc, char**argv)
         cvtColor(capFrame, grayFrame, COLOR_BGR2GRAY);
         list<Rect> roiRect;
 
-        extract_moving_object(grayFrame, elementErode, elementDilate, erodeFilter, dilateFilter, gaussianFilter, bsModel, roiRect);
+        extract_moving_object(grayFrame, elementErode, elementDilate, erodeFilter, dilateFilter, bsModel, roiRect);
 
         if(f3xBase.IsVideoOutputResult()) {
             if(f3xBase.IsVideoOutput()) {
@@ -1916,10 +2088,8 @@ int main(int argc, char**argv)
                 Point textOrg(40, 40);
                 putText(outFrame, string(str), textOrg, fontFace, fontScale, Scalar(0, 255, 0), thicknessScale, cv::LINE_8);
 */
-                videoOutputQueue.push(outFrame.clone());
-            } else {
-                videoOutputQueue.push(capFrame.clone());
             }
+            videoOutputQueue.push(capFrame.clone());
         }
 
 //        high_resolution_clock::time_point t2(high_resolution_clock::now());
@@ -1941,7 +2111,7 @@ int main(int argc, char**argv)
     if(f3xBase.IsVideoOutput()) {
         if(bPause == false) {
             videoOutputQueue.cancel();
-            voThread.join();
+            videoOutputThread.join();
         }
     }
 
