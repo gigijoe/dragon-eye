@@ -1066,6 +1066,9 @@ private:
     unsigned int m_srcIp;
     unsigned short m_srcPort;
 
+    std::queue<uint8_t> m_triggerQueue;
+    thread m_triggerThread;
+
     int SetupTTY(int fd, int speed, int parity) {
         struct termios tty;
         memset (&tty, 0, sizeof tty);
@@ -1207,6 +1210,8 @@ public:
                 printf("Error %d opening %s: %s\n", errno, ttyTHS1, strerror (errno));
         }
 
+        m_triggerThread = thread(&F3xBase::TriggerTtyTask, this);
+
         return m_ttyFd;
     }
 
@@ -1258,6 +1263,9 @@ public:
         if(m_ttyFd)
             close(m_ttyFd);
         m_ttyFd = 0;
+
+        if(m_triggerThread.joinable())
+            m_triggerThread.join();
     }
 
     void CloseUdpSocket() {
@@ -1268,7 +1276,7 @@ public:
 
     void TriggerTty(bool newTrigger) {
         static uint8_t serNo = 0x3f;
-        uint8_t data[1];
+        uint8_t data;
 
         if(!m_ttyFd)
             return;
@@ -1279,13 +1287,28 @@ public:
         }
 
         if(m_baseType == BASE_A) {
-            data[0] = (serNo & 0x3f);
+            data = (serNo & 0x3f);
             printf("BASE_A[%d]\r\n", serNo);
         } else if(m_baseType == BASE_B) {
-            data[0] = (serNo & 0x3f) | 0x40;
+            data = (serNo & 0x3f) | 0x40;
             printf("BASE_B[%d]\r\n", serNo);
         }        
-        write(m_ttyFd, data, 1);
+#if 0
+        write(m_ttyFd, &data, 1);
+#else
+        m_triggerQueue.push(data);
+#endif
+    }
+
+    void TriggerTtyTask() {
+        while(m_ttyFd) {
+            if(m_triggerQueue.size() > 0) {
+                auto data = m_triggerQueue.front();
+                m_triggerQueue.pop();
+                write(m_ttyFd, &data, sizeof(data));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
     }
 
     size_t WriteUdpSocket(const uint8_t *data, size_t size) {
