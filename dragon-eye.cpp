@@ -72,7 +72,7 @@ using std::chrono::seconds;
 #else
     #define CAMERA_WIDTH 1280
     #define CAMERA_HEIGHT 720
-    #define CAMERA_FPS 60
+    #define CAMERA_FPS 30
     #define MIN_TARGET_WIDTH 8
     #define MIN_TARGET_HEIGHT 8
     #define MAX_TARGET_WIDTH 320
@@ -290,7 +290,7 @@ public:
             unsigned long f = m_frameTick - t->FrameTick();
             r2.x += t->m_velocity.x * f;
             r2.y += t->m_velocity.y * f;
-            for(rr=roiRect.begin();rr!=roiRect.end();rr++) {
+            for(rr=roiRect.begin();rr!=roiRect.end();++rr) {
                 if((r1 & *rr).area() > 0) { /* Target tracked ... */
                     //if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
                         break;                
@@ -307,7 +307,7 @@ public:
                 }
             }
             if(rr == roiRect.end()) { /* Target missing ... */
-                for(rr=roiRect.begin();rr!=roiRect.end();rr++) { /* */
+                for(rr=roiRect.begin();rr!=roiRect.end();++rr) { /* */
                     if(cv::norm(r2.tl()-rr->tl()) < ((rr->width + rr->height) * 2)) { /* Target tracked with velocity and Euclidean distance ... */
                         if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
                             break;
@@ -322,17 +322,26 @@ public:
                     //printf("lost target : %d, %d\n", p.x, p.y);
                     printf("lost target : %d, %d\n", t->m_velocity.x, t->m_velocity.y);
 #endif          
+#if 0
+                    if(t->TriggerCount() == 0 || t->TriggerCount() >= MAX_NUM_TRIGGER)
+                        t = m_targets.erase(t); /* Remove tracing target */
+                    else {
+                        printf("keep target !!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+                        ++t;
+                    }
+#else
                     t = m_targets.erase(t); /* Remove tracing target */
+#endif                    
                     continue;
                 }
             } else { /* Target tracked ... */
                 t->Update(*rr, m_frameTick);
                 roiRect.erase(rr);
             }
-            t++;
+            ++t;
         }
 
-        for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();rr++) {
+        for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();++rr) {
             if(!m_newTargetRestrictionRect.empty()) {
                 if((m_newTargetRestrictionRect & *rr).area() > 0)
                     continue;
@@ -455,7 +464,7 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
     gst_buffer_map (buffer, &map, GST_MAP_WRITE); // make buffer writable
     raw = (gint8 *)map.data;
 
-    for (int i = 0; i<CAMERA_HEIGHT; i++) {
+    for (int i=0;i<CAMERA_HEIGHT;i++) {
         Vec3b* ptr = ctx->lastFrame.ptr<Vec3b>(i);
         for (int j = 0; j<CAMERA_WIDTH; j++) {
             uint64_t offset = ((i*CAMERA_WIDTH)+j)*4;
@@ -1196,7 +1205,7 @@ public:
         const char *ttyUSB0 = "/dev/ttyUSB0";
         const char *ttyTHS1 = "/dev/ttyTHS1";
 
-        m_ttyFd = open (ttyUSB0, O_RDWR | O_NOCTTY | O_SYNC);
+        m_ttyFd = open(ttyUSB0, O_RDWR | O_NOCTTY | O_SYNC);
         if(m_ttyFd > 0) {
             SetupTTY(m_ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
             printf("Open %s successful ...\n", ttyUSB0);
@@ -1307,7 +1316,7 @@ public:
                 m_triggerQueue.pop();
                 write(m_ttyFd, &data, sizeof(data));
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
@@ -2057,7 +2066,7 @@ int main(int argc, char**argv)
 
         if(f3xBase.IsVideoOutputResult()) {
             if(f3xBase.IsVideoOutput()) {
-                for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();rr++)
+                for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();++rr)
                     rectangle( outFrame, rr->tl(), rr->br(), Scalar(0, 255, 0), 2, 8, 0 );
                 if(f3xBase.IsNewTargetRestriction()) {
                     Rect nr = tracker.NewTargetRestriction();
@@ -2074,30 +2083,39 @@ int main(int argc, char**argv)
 
         list< Target > & targets = tracker.TargetList();
 
-        for(list< Target >::iterator t=targets.begin();t!=targets.end();t++) {
+        for(list< Target >::iterator t=targets.begin();t!=targets.end();++t) {
             if(f3xBase.IsVideoOutputResult()) {
                 if(f3xBase.IsVideoOutput()) {
                     t->Draw(outFrame);
                 }
             }
-            if(t->CourseLength() > MIN_COURSE_LENGTH && 
+
+            bool doTrigger = false;
+            if(t->TriggerCount() > 0 && t->TriggerCount() < MAX_NUM_TRIGGER) {
+                doTrigger = true;
+            } else if(t->CourseLength() > MIN_COURSE_LENGTH && 
                     t->TrackedCount() > MIN_TARGET_TRACKED_COUNT) {
                 if((t->BeginPoint().y > cy && t->EndPoint().y <= cy) ||
                     (t->BeginPoint().y < cy && t->EndPoint().y >= cy)) {
-
                     if(t->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
-                        if(f3xBase.IsVideoOutputResult()) {
-                            if(f3xBase.IsVideoOutput())
-                                line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
-                        }
-                        f3xBase.TriggerTty(t->TriggerCount() == 0);
-                        f3xBase.TriggerUdpSocket(t->TriggerCount() == 0);
-                        f3xBase.RedLed(on);
-                        f3xBase.Relay(on);
-
-                        t->Trigger();
+                        doTrigger = true;
                     }
                 }
+            }
+
+            if(doTrigger) {
+                if(f3xBase.IsVideoOutputResult()) {
+                    if(f3xBase.IsVideoOutput())
+                        line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
+                }
+                f3xBase.TriggerTty(t->TriggerCount() == 0);
+                f3xBase.TriggerUdpSocket(t->TriggerCount() == 0);
+                f3xBase.RedLed(on);
+                f3xBase.Relay(on);
+
+                t->Trigger();
+
+                break; /* Has been trigger, ignore other targets */
             }
         }        
 
