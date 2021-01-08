@@ -1884,10 +1884,12 @@ void sig_handler(int signo)
     if(signo == SIGINT) {
         printf("SIGINT\n");
         bShutdown = true;
-    } else if(signo == SIGHUP) {
+    } 
+/* SIGHUP is for stop rtsp server ONLY */
+    /* else if(signo == SIGHUP) { 
         printf("SIGHUP\n");
         bRestart = true;
-    }
+    } */
 }
 
 /*
@@ -1900,10 +1902,10 @@ int main(int argc, char**argv)
 {
     if(signal(SIGINT, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGINT\n");
-
+/*
     if(signal(SIGHUP, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGHUP\n");
-
+*/
 
     ofstream pf(PID_FILE); 
     if(pf) {
@@ -2088,8 +2090,9 @@ int main(int argc, char**argv)
                 Point textOrg(40, 40);
                 putText(outFrame, string(str), textOrg, fontFace, fontScale, Scalar(0, 255, 0), thicknessScale, cv::LINE_8);
 */
-            }
-            videoOutputQueue.push(capFrame.clone());
+                videoOutputQueue.push(outFrame.clone());
+            } else
+                videoOutputQueue.push(capFrame.clone());
         }
 
 //        high_resolution_clock::time_point t2(high_resolution_clock::now());
