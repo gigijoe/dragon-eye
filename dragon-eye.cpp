@@ -374,62 +374,57 @@ public:
     struct cancelled {};
 
 public:
-    FrameQueue() : cancelled_(false) {}
+    FrameQueue() : isCancelled(false) {}
 
     void push(Mat const & image);
     Mat pop();
 
     void cancel();
-    bool isCancelled() { return cancelled_; }
     void reset();
 
 private:
-    std::queue<cv::Mat> queue_;
-    std::mutex mutex_;
-    std::condition_variable cond_;
-    bool cancelled_;
+    std::queue<cv::Mat> matQueue;
+    std::mutex matMutex;
+    std::condition_variable condEvent;
+    bool isCancelled;
 };
 
 void FrameQueue::cancel()
 {
-    std::unique_lock<std::mutex> mlock(mutex_);
-    cancelled_ = true;
-    cond_.notify_all();
+    std::unique_lock<std::mutex> mlock(matMutex);
+    isCancelled = true;
+    condEvent.notify_all();
 }
 
 void FrameQueue::push(cv::Mat const & image)
 {
-#if 1
-    while(queue_.size() >= 3) /* Prevent memory overflow ... */
+    while(matQueue.size() >= 3) /* Prevent memory overflow ... */
         return; /* Drop frame */
-#else
-    if(queue_.size() >= 3) /* Prevent memory overflow ... */
-        queue_.clear();
-#endif
-    std::unique_lock<std::mutex> mlock(mutex_);
-    queue_.push(image);
-    cond_.notify_one();
+
+    std::unique_lock<std::mutex> mlock(matMutex);
+    matQueue.push(image);
+    condEvent.notify_one();
 }
 
 Mat FrameQueue::pop()
 {
-    std::unique_lock<std::mutex> mlock(mutex_);
+    std::unique_lock<std::mutex> mlock(matMutex);
 
-    while (queue_.empty()) {
-        if (cancelled_)
+    while (matQueue.empty()) {
+        if (isCancelled)
             throw cancelled();
-        cond_.wait(mlock);
-        if (cancelled_)
+        condEvent.wait(mlock);
+        if (isCancelled)
             throw cancelled();
     }
-    Mat image(queue_.front());
-    queue_.pop();
+    Mat image(matQueue.front());
+    matQueue.pop();
     return image;
 }
 
 void FrameQueue::reset()
 {
-    cancelled_ = false;
+    isCancelled = false;
 }
 
 /*
@@ -584,7 +579,7 @@ int gst_rtsp_server_task()
     gst_rtsp_media_factory_set_launch (factory,
 //          "( appsrc name=mysrc is-live=true ! videoconvert ! omxh265enc ! rtph265pay mtu=1400 name=pay0 pt=96 )");
         "appsrc name=mysrc is-live=true ! videoconvert ! \
-nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
+nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=1000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 
     gst_rtsp_media_factory_set_shared (factory, TRUE);
     /* notify when our media is ready, This is called whenever someone asks for
