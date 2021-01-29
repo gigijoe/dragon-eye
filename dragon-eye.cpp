@@ -80,7 +80,7 @@ using std::chrono::seconds;
 #endif
 
 #define MAX_NUM_TARGET               6      /* Maximum targets to tracing */
-#define MAX_NUM_TRIGGER              4      /* Maximum number of RF trigger after detection of cross line */
+#define MAX_NUM_TRIGGER              1      /* Maximum number of RF trigger after detection of cross line */
 #define MAX_NUM_FRAME_MISSING_TARGET 6     /* Maximum number of frames to keep tracing lost target */
 
 #define MIN_COURSE_LENGTH            120    /* Minimum course length of RF trigger after detection of cross line */
@@ -522,19 +522,7 @@ media_configure (GstRTSPMediaFactory * factory, GstRTSPMedia * media, gpointer u
 #include <glib-object.h>
 #include <glib-unix.h>
 
-// This callback will be inovked when this process receives SIGINT or SIGTERM.
-gboolean TerminationSignalCallback(gpointer data) {
-  cout << "Received a signal to terminate the daemon";
-  GMainLoop* loop = reinterpret_cast<GMainLoop*>(data);
-  g_main_loop_quit(loop);
-  // This function can return false to remove this signal handler as we are
-  // quitting the main loop anyway.
-  bShutdown = true;
-
-  return false;
-}
-
-// This callback will be inovked when this process receives SIGINT or SIGTERM.
+// This callback will be inovked when this process receives SIGHUP.
 gboolean HangupSignalCallback(gpointer data) {
   cout << "Received a signal to terminate the daemon";
   GMainLoop* loop = reinterpret_cast<GMainLoop*>(data);
@@ -561,8 +549,7 @@ int gst_rtsp_server_task()
 
     loop = g_main_loop_new (NULL, FALSE);
 
-    // Set up a signal handler for handling SIGINT and SIGTERM.
-    g_unix_signal_add(SIGINT, TerminationSignalCallback, loop);
+    // Set up a signal handler for handling SIGHUP.
     g_unix_signal_add(SIGHUP, HangupSignalCallback, loop);
     
     /* create a server instance */
@@ -1516,7 +1503,6 @@ public:
 
     void LoadSystemConfig() {
         char fn[STR_SIZE];
-
         snprintf(fn, STR_SIZE, "%s/system.config", CONFIG_FILE_DIR);
         vector<pair<string, string> > cfg;
         if(ParseConfigFile(fn, cfg) > 0)
@@ -1717,16 +1703,54 @@ public:
                 const char stopped[] = "#Stopped";
 
                 if(line == "#SystemSettings") {
-                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
                     if(ParseConfigStream(iss, cfg) > 0) {
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
                         ApplySystemConfig(cfg);
-                        SaveSystemConfig(s);
+                        SaveSystemConfig(s.substr(16)); /* Strip cmd ahead */
+                    } else { /* Request for system config */
+                        char fn[STR_SIZE];
+                        snprintf(fn, STR_SIZE, "%s/system.config", CONFIG_FILE_DIR);
+                        FILE *fp = fopen(fn, "rb");
+                        if(fp) {
+                            fseek(fp, 0L, SEEK_END);
+                            size_t sz = ftell(fp);
+                            if(sz > 0) {
+                                fseek(fp, 0L, SEEK_SET);
+                                size_t cmd_size = strlen("#SystemSettings\n");
+                                uint8_t *buf = (uint8_t *)malloc(cmd_size + sz);
+                                strcpy((char *)buf, "#SystemSettings\n");
+                                size_t r = fread(buf + cmd_size, 1, sz, fp);
+                                if(r)
+                                    WriteSourceUdpSocket(buf, cmd_size + sz);
+                                free(buf);
+                            }
+                            fclose(fp);
+                        }
                     }
                 } else if(line == "#CameraSettings") {
-                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
                     if(ParseConfigStream(iss, cfg) > 0) {
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
                         camera.ApplyConfig(cfg);
-                        camera.SaveConfig(s);
+                        camera.SaveConfig(s.substr(16)); /* Strip cmd ahead */
+                    }  else { /* Request for system config */
+                        char fn[STR_SIZE];
+                        snprintf(fn, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
+                        FILE *fp = fopen(fn, "rb");
+                        if(fp) {
+                            fseek(fp, 0L, SEEK_END);
+                            size_t sz = ftell(fp);
+                            if(sz > 0) {
+                                fseek(fp, 0L, SEEK_SET);
+                                size_t cmd_size = strlen("#CameraSettings\n");
+                                uint8_t *buf = (uint8_t *)malloc(cmd_size + sz);
+                                strcpy((char *)buf, "#CameraSettings\n");
+                                size_t r = fread(buf + cmd_size, 1, sz, fp);
+                                if(r)
+                                    WriteSourceUdpSocket(buf, cmd_size + sz);
+                                free(buf);
+                            }
+                            fclose(fp);
+                        }
                     }
                 } else if(line == "#Start") {                    
                     WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
@@ -1739,13 +1763,6 @@ public:
                         WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
                     else
                         WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
-                } else if(line == "#BaseType") {
-                    const char baseTypeA[] = "#BaseTypeA";
-                    const char baseTypeB[] = "#BaseTypeB";
-                    if(m_baseType == BASE_A)
-                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(baseTypeA), strlen(baseTypeA));
-                    else if(m_baseType == BASE_B)
-                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(baseTypeB), strlen(baseTypeB));
                 }
             }
         }
@@ -1910,6 +1927,7 @@ void sig_handler(int signo)
 {
     if(signo == SIGINT) {
         printf("SIGINT\n");
+        kill(getpid(), SIGHUP); /* To stop RTSP server */
         bShutdown = true;
     } 
 /* SIGHUP is for stop rtsp server ONLY */

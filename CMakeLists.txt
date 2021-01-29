@@ -39,4 +39,7 @@ INCLUDE_DIRECTORIES(/usr/local/include/opencv4)
 add_executable( dragon-eye dragon-eye.cpp jetsonGPIO/jetsonGPIO.c )
 target_link_libraries( dragon-eye ${OpenCV_LIBS} Threads::Threads ${GST_LIBRARIES})
 
+add_executable( test-launch test-launch.c )
+target_link_libraries( test-launch ${GST_LIBRARIES})
+
 install(TARGETS dragon-eye DESTINATION /usr/local/bin)
