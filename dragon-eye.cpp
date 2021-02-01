@@ -86,11 +86,11 @@ using std::chrono::seconds;
 #define MIN_COURSE_LENGTH            120    /* Minimum course length of RF trigger after detection of cross line */
 #define MIN_TARGET_TRACKED_COUNT     3      /* Minimum target tracked count of RF trigger after detection of cross line */
 
-#define VIDEO_OUTPUT_DIR             "/home/gigijoe/Videos"
+#define VIDEO_OUTPUT_DIR             "Videos" /* $(HOME)/Videos/ */
 #define VIDEO_OUTPUT_FILE_NAME       "base"
 #define VIDEO_FILE_OUTPUT_DURATION   90     /* Video file duration 90 secends */
 
-#define STR_SIZE                  1024
+#define STR_SIZE                     1024
 #define CONFIG_FILE_DIR              "/etc/dragon-eye"
 
 typedef enum { BASE_UNKNOWN, BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType_t;
@@ -608,43 +608,43 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
     VideoWriter outHLS;
     VideoWriter outRTSP;
 
-    if(isVideoOutputFile) {
-#if 0        
+    int videoOutoutIndex = 0;
+
+    if(isVideoOutputFile) {       
         char filePath[64];
-        int videoOutoutIndex = 0;
         while(videoOutoutIndex < 1000) {
-            snprintf(filePath, 64, "%s/%s%c%03d.mkv", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+            snprintf(filePath, 64, "%s/%s/%s%c%03d.mkv", getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
             FILE *fp = fopen(filePath, "rb");
             if(fp) { /* file exist ... */
                 fclose(fp);
-                videoOutoutIndex++;
+                ++videoOutoutIndex;
             } else
                 break; /* File doesn't exist. OK */
         }
+        if(videoOutoutIndex == 1000)
+            videoOutoutIndex = 0; /* Loop */
         /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
-
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
-                   videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-                   nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
-            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
-#endif
-#if 1
+videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s/%s%c%03d.mkv ", 
+            30, getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+#if 0 /* Always start from index 0 */
         /* 90 secs duration, maximum 100 files */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
                    nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! \
-                   splitmuxsink muxer=matroskamux sink=filesink location=%s/%s%c%%03d.mkv max-size-time=90000000000 max-files=100 async-finalize=true async-handling=true ", 
-            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B');
+                   splitmuxsink muxer=matroskamux sink=filesink location=%s/%s/%s%c%%03d.mkv max-size-time=90000000000 max-files=100 async-finalize=true async-handling=true ", 
+            30, getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B');
 #endif
 #if 0 /* NOT work, due to tee */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! \
 tee name=t \
-t. ! queue ! matroskamux ! filesink location=%s/%s%c%03d.mkv  \
+t. ! queue ! matroskamux ! filesink location=%s/%s/%s%c%03d.mkv  \
 t. ! queue ! video/x-h265, stream-format=byte-stream ! h265parse ! rtph265pay mtu=1400 ! \
 udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
-            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+            30, getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #endif
         outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
         cout << endl;
@@ -720,13 +720,28 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
                 outHLS.write(frame);
             //if(isVideoOutputRTSP)
             //    outRTSP.write(frame);
-#if 0            
+            
             steady_clock::time_point t2 = steady_clock::now();
             double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
 
-            if(isVideoOutputFile && secs >= VIDEO_FILE_OUTPUT_DURATION)
-                videoOutputQueue.cancel(); /* Reach duration limit, stop record video */
-#endif
+            if(isVideoOutputFile && secs >= VIDEO_FILE_OUTPUT_DURATION) { /* Reach duration limit, stop record video */
+                cout << endl;
+                cout << "*** Stop record video ***" << endl;
+                outFile.release();
+
+                snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
+                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
+                    nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s/%s%c%03d.mkv ", 
+                    30, getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', ++videoOutoutIndex);
+
+                outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
+                cout << endl;
+                cout << gstStr << endl;
+                cout << endl;
+                cout << "*** Start record video ***" << endl;
+
+                t1 = steady_clock::now();
+            }
         }
     } catch (FrameQueue::cancelled & /*e*/) {
         // Nothing more to process, we're done
@@ -1808,6 +1823,10 @@ static void Start(F3xBase & fb)
     cout << "*** Object tracking started ***" << endl;
 
     camera.Open();
+
+    Mat frame;
+    for(int i=0;i<30;i++) /* Read out unstable frames ... */
+        camera.Read(frame);
 
     if(fb.IsVideoOutput())
         videoOutputThread = thread(&VideoOutputTask, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), 
