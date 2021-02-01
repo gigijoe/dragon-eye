@@ -701,6 +701,8 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 
     if(isVideoOutputRTSP) {
         rtspServerThread = thread(&gst_rtsp_server_task);
+        cout << endl;
+        cout << "*** Start RTSP video ***" << endl;        
     }
 
     videoOutputQueue.reset();
@@ -710,8 +712,32 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
     try {
         while(1) {
             Mat frame = videoOutputQueue.pop();
-            if(isVideoOutputFile) 
+            if(isVideoOutputFile) {
                 outFile.write(frame);
+
+                steady_clock::time_point t2 = steady_clock::now();
+                double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
+
+                if(secs >= VIDEO_FILE_OUTPUT_DURATION) { /* Reach duration limit, stop record video */
+                    cout << endl;
+                    cout << "*** Stop record video ***" << endl;
+                    outFile.release();
+
+                    snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
+videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
+nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s/%s%c%03d.mkv ", 
+                        30, getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', ++videoOutoutIndex);
+
+                    outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
+                    cout << endl;
+                    cout << gstStr << endl;
+                    cout << endl;
+                    cout << "*** Start record video ***" << endl;
+
+                    t1 = steady_clock::now();
+                }
+            }
+
             if(isVideoOutputScreen)
                 outScreen.write(frame);
             if(isVideoOutputRTP)
@@ -720,28 +746,6 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
                 outHLS.write(frame);
             //if(isVideoOutputRTSP)
             //    outRTSP.write(frame);
-            
-            steady_clock::time_point t2 = steady_clock::now();
-            double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
-
-            if(isVideoOutputFile && secs >= VIDEO_FILE_OUTPUT_DURATION) { /* Reach duration limit, stop record video */
-                cout << endl;
-                cout << "*** Stop record video ***" << endl;
-                outFile.release();
-
-                snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
-                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-                    nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s/%s%c%03d.mkv ", 
-                    30, getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', ++videoOutoutIndex);
-
-                outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
-                cout << endl;
-                cout << gstStr << endl;
-                cout << endl;
-                cout << "*** Start record video ***" << endl;
-
-                t1 = steady_clock::now();
-            }
         }
     } catch (FrameQueue::cancelled & /*e*/) {
         // Nothing more to process, we're done
