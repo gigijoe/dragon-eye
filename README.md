@@ -15,9 +15,9 @@ At least four rounds should be completed in order to determine the winner.
 - Trigger out GPIO / UART / UDP when target across central line
 - Record video files to SD card with or without tracking result
 - Built-in wifi AP for connectivity
-- Built-in RTSP video server
+- Built-in RTSP video server (H.265 codec)
 - Video output can be one of the following option HDMI / RTP / HLS / RTSP (Prefer RTSP)
-- Supports Android APP to start / stop / config / play RTSP video stream
+- Supports Android APP (Dragon Eye RC) to start / stop / config / play RTSP video stream
 - Written in c/c++ for running performance
 - Background subtraction runnung by GPU to improve real-time performance
 

@@ -1041,6 +1041,13 @@ static Camera camera;
 void UdpServerTask();
 
 static Ptr<cuda::BackgroundSubtractorMOG2> bsModel;
+#if 0
+static Ptr<cuda::Filter> erodeFilter;
+static Ptr<cuda::Filter> dilateFilter;
+#else
+static Mat elementErode;
+static Mat elementDilate;
+#endif
 
 class F3xBase {
 private:
@@ -1808,19 +1815,28 @@ static F3xBase f3xBase;
 
 static thread videoOutputThread;
 
-static void Start(F3xBase & fb)
+static void Start()
 {
-    if(fb.IsBaseHwSwitch()) /* Overwrite config by HW switch */
-        fb.ApplyHwSwitch();
+    if(f3xBase.IsBaseHwSwitch()) /* Overwrite config by HW switch */
+        f3xBase.ApplyHwSwitch();
 
-    if(fb.IsNewTargetRestriction())
+    if(f3xBase.IsNewTargetRestriction())
         //tracker.NewTargetRestriction(Rect(cy - 200, cx - 200, 400, 200));
         tracker.NewTargetRestriction(Rect(0, 180, 180, 360));
     else
         tracker.NewTargetRestriction(Rect());
-
+#if 0
     bsModel->setVarThreshold(fb.Mog2Threshold());
-
+#else
+    /* background history count, varThreshold, shadow detection */
+    //Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
+    bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
+    //cout << bsModel->getVarInit() << " / " << bsModel->getVarMax() << " / " << bsModel->getVarMax() << endl;
+    /* Default variance of each gaussian component 15 / 75 / 75 */ 
+    bsModel->setVarInit(15);
+    bsModel->setVarMax(20);
+    bsModel->setVarMin(4);    
+#endif
     camera.UpdateExposure();
 
     cout << endl;
@@ -1832,24 +1848,26 @@ static void Start(F3xBase & fb)
     for(int i=0;i<30;i++) /* Read out unstable frames ... */
         camera.Read(frame);
 
-    if(fb.IsVideoOutput())
+    if(f3xBase.IsVideoOutput()) {
+        F3xBase & fb = f3xBase;
         videoOutputThread = thread(&VideoOutputTask, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), 
             fb.IsVideoOutputRTP(), fb.RtpRemoteHost(), fb.RtpRemotePort(), 
             fb.IsVideoOutputHLS(), fb.IsVideoOutputRTSP(),CAMERA_WIDTH, CAMERA_HEIGHT);
+    }
 
-    fb.GreenLed(off);
+    f3xBase.GreenLed(off);
 
     bPause = false;
 }
 
-static void Stop(F3xBase & fb)
+static void Stop()
 {
     f3xBase.GreenLed(on); /* On while pause */
 
     cout << endl;
     cout << "*** Object tracking stoped ***" << endl;
     
-    if(fb.IsVideoOutput()) {
+    if(f3xBase.IsVideoOutput()) {
         videoOutputQueue.cancel();
         if(videoOutputThread.joinable())
             videoOutputThread.join();
@@ -1859,15 +1877,15 @@ static void Stop(F3xBase & fb)
     bPause = true;
 }
 
-static void OnPushButton(F3xBase & fb) 
+static void OnPushButton() 
 {
     if(bPause)
-        Start(fb);
+        Start();
     else /* Restart, record new video */
-        Stop(fb);
+        Stop();
 }
 
-static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect> & roiRect, int y_offset = 0)
+static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect> & roiRect)
 {
     uint32_t num_target = 0;
 
@@ -1906,18 +1924,13 @@ static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect>
         if(roiFrame.cols > roiFrame.rows && (roiFrame.cols >> 4) > roiFrame.rows)
             continue; /* Ignore thin object */
 #endif                        
-        boundRect[i].y += y_offset;
         roiRect.push_back(boundRect[i]);
         if(++num_target >= MAX_NUM_TARGET)
             break;
     }    
 }
 
-static void extract_moving_object(Mat & frame, 
-    Mat & elementErode, Mat & elementDilate, 
-    Ptr<cuda::Filter> & erodeFilter, Ptr<cuda::Filter> & dilateFilter, 
-    Ptr<cuda::BackgroundSubtractorMOG2> & bsModel, 
-    list<Rect> & roiRect, int y_offset = 0)
+static void extract_moving_object(Mat & frame, list<Rect> & roiRect)
 {
     Mat foregroundFrame;
     cuda::GpuMat gpuFrame;
@@ -1938,9 +1951,8 @@ static void extract_moving_object(Mat & frame,
     morphologyEx(foregroundFrame, foregroundFrame, MORPH_ERODE, elementErode);
     morphologyEx(foregroundFrame, foregroundFrame, MORPH_DILATE, elementDilate);
 #endif
-    contour_moving_object(frame, foregroundFrame, roiRect, y_offset);
+    contour_moving_object(frame, foregroundFrame, roiRect);
 }
-
 
 /*
 *
@@ -1998,20 +2010,21 @@ int main(int argc, char**argv)
 
     int cx = CAMERA_WIDTH - 1;
     int cy = (CAMERA_HEIGHT / 2) - 1;
-
+#if 0
+    erodeFilter = cuda::createMorphologyFilter(MORPH_ERODE, CV_8UC1, elementErode);
+    dilateFilter = cuda::createMorphologyFilter(MORPH_DILATE, CV_8UC1, elementDilate);
+#else
     int erosion_size = 1;   
-    Mat elementErode = cv::getStructuringElement(cv::MORPH_RECT,
+    elementErode = cv::getStructuringElement(cv::MORPH_RECT,
                     cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
                     cv::Point(-1, -1) ); /* Default anchor point */
 
     int dilate_size = 2;   
-    Mat elementDilate = cv::getStructuringElement(cv::MORPH_RECT,
+    elementDilate = cv::getStructuringElement(cv::MORPH_RECT,
                     cv::Size(2 * dilate_size + 1, 2 * dilate_size + 1), 
                     cv::Point(-1, -1) ); /* Default anchor point */
-
-    Ptr<cuda::Filter> erodeFilter = cuda::createMorphologyFilter(MORPH_ERODE, CV_8UC1, elementErode);
-    Ptr<cuda::Filter> dilateFilter = cuda::createMorphologyFilter(MORPH_DILATE, CV_8UC1, elementDilate);
-
+#endif
+#if 0
     /* background history count, varThreshold, shadow detection */
     //Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
     bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
@@ -2020,7 +2033,7 @@ int main(int argc, char**argv)
     bsModel->setVarInit(15);
     bsModel->setVarMax(20);
     bsModel->setVarMin(4);
-
+#endif
     cout << endl;
     cout << "### Press button to start object tracking !!!" << endl;
 
@@ -2030,7 +2043,7 @@ int main(int argc, char**argv)
     uint64_t loopCount = 0;
 
     if(bPause == false)
-        Start(f3xBase);
+        Start();
 
     while(1) {
         if(bShutdown)
@@ -2038,14 +2051,14 @@ int main(int argc, char**argv)
 
         if(bRestart) { /* Start object detection */
             if(bPause == false) 
-                Stop(f3xBase);
-            Start(f3xBase);
+                Stop();
+            Start();
             bRestart = false;
         }
 
         if(bStop) { /* Stop object detection */
             if(bPause == false) 
-                Stop(f3xBase);
+                Stop();
             bStop = false;
         }
 
@@ -2053,7 +2066,7 @@ int main(int argc, char**argv)
         unsigned int gv = f3xBase.PushButton();
         if(gv == 0 && vPushButton == 1) { /* Raising edge */
             if(loopCount >= 10) { /* Button debunce */
-                OnPushButton(f3xBase);
+                OnPushButton();
                 loopCount = 0;
             }
         }
@@ -2098,7 +2111,7 @@ int main(int argc, char**argv)
         cvtColor(capFrame, grayFrame, COLOR_BGR2GRAY);
         list<Rect> roiRect;
 
-        extract_moving_object(grayFrame, elementErode, elementDilate, erodeFilter, dilateFilter, bsModel, roiRect);
+        extract_moving_object(grayFrame, roiRect);
 
         if(f3xBase.IsVideoOutputResult()) {
             if(f3xBase.IsVideoOutput()) {
