@@ -16,10 +16,10 @@ At least four rounds should be completed in order to determine the winner.
 - Record video files to SD card with or without tracking result
 - Built-in wifi AP for connectivity
 - Built-in RTSP video server
-- Video output can be one of the following option HDMI / RTP / HLS / RTSP
+- Video output can be one of the following option HDMI / RTP / HLS / RTSP (Prefer RTSP)
 - Supports Android APP to start / stop / config / play RTSP video stream
-- Written in c/c++ for real-time performance
-- Background subtraction runnung by GPU so that can do 720p / 50+ fps
+- Written in c/c++ for running performance
+- Background subtraction runnung by GPU to improve real-time performance
 
 #### Hardware Requirement 
 - nVidia Jetson Nano development kit (Prefer version B01)
