@@ -17,7 +17,7 @@ At least four rounds should be completed in order to determine the winner.
 - Built-in wifi AP for connectivity
 - Built-in RTSP video server (H.265 codec)
 - Video output can be one of the following option HDMI / RTP / HLS / RTSP (Prefer RTSP)
-- Supports Android APP (Dragon Eye RC) to start / stop / config / play RTSP video stream
+- Android APP to start / stop / config / play RTSP video stream
 - Written in c/c++ for running performance
 - Background subtraction runnung by GPU to improve real-time performance
 
@@ -37,6 +37,19 @@ At least four rounds should be completed in order to determine the winner.
 - Keep camera steady as possible
 - Keep central of camera view away from continually moving objects such as grass and trees as possible
 - Use camera filter or adjust exposure threshold from Android APP in bright sunlight 
+
+#### Android APP
+[dragon-eye-rc](https://github.com/gigijoe/dragon-eye-rc)
+- Remote control dragon-eye from Android phone
+- Connect dragon-eye through wifi
+- Start / Stop dragon-eye
+- System config / Camera config
+- Play video from RTSP server of dragon-eye
+
+#### Simulator
+[dragon-eye simulator](https://github.com/gigijoe/dragon-eye-simulator)
+- An program running on Ubuntu desktop for development of dragon-eye
+- It takes video file recorded by dragon-eye and output result on screen or to file
 
 #### Donate
 
