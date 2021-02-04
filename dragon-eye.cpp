@@ -108,12 +108,6 @@ static bool bStop = false;
 *
 */
 
-static inline bool ContoursSortByArea(vector<cv::Point> contour1, vector<cv::Point> contour2)  
-{  
-    //return (contour1.size() > contour2.size()); /* Outline length */
-    return (cv::contourArea(contour1) > cv::contourArea(contour2)); /* Area */
-}  
-
 inline void writeText( Mat & mat, const string text, const Point textOrg)
 {
    int fontFace = FONT_HERSHEY_SIMPLEX;
@@ -1038,17 +1032,6 @@ static Camera camera;
 *
 */
 
-void UdpServerTask();
-
-static Ptr<cuda::BackgroundSubtractorMOG2> bsModel;
-#if 0
-static Ptr<cuda::Filter> erodeFilter;
-static Ptr<cuda::Filter> dilateFilter;
-#else
-static Mat elementErode;
-static Mat elementDilate;
-#endif
-
 class F3xBase {
 private:
     int m_ttyFd, m_udpSocket;
@@ -1700,7 +1683,7 @@ public:
         gpioSetValue(m_relay, onOff);
     }
 
-    unsigned int PushButton() {
+    unsigned int GetPushButton() {
         unsigned int gv;
         gpioGetValue(m_pushButton, &gv);
         return gv;
@@ -1805,6 +1788,9 @@ public:
             m_udpServerThread.join();
         }
     }
+
+    static void Start();
+    static void Stop();
 };
 
 static F3xBase f3xBase; 
@@ -1813,9 +1799,18 @@ static F3xBase f3xBase;
 *
 */
 
+static Ptr<cuda::BackgroundSubtractorMOG2> bsModel;
+#if 0
+static Ptr<cuda::Filter> erodeFilter;
+static Ptr<cuda::Filter> dilateFilter;
+#else
+static Mat elementErode;
+static Mat elementDilate;
+#endif
+
 static thread videoOutputThread;
 
-static void Start()
+void F3xBase::Start()
 {
     if(f3xBase.IsBaseHwSwitch()) /* Overwrite config by HW switch */
         f3xBase.ApplyHwSwitch();
@@ -1860,7 +1855,7 @@ static void Start()
     bPause = false;
 }
 
-static void Stop()
+void F3xBase::Stop()
 {
     f3xBase.GreenLed(on); /* On while pause */
 
@@ -1877,14 +1872,6 @@ static void Stop()
     bPause = true;
 }
 
-static void OnPushButton() 
-{
-    if(bPause)
-        Start();
-    else /* Restart, record new video */
-        Stop();
-}
-
 static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect> & roiRect)
 {
     uint32_t num_target = 0;
@@ -1893,7 +1880,10 @@ static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect>
     vector< Vec4i > hierarchy;
 //  findContours(foregroundFrame, contours, hierarchy, RETR_TREE, CHAIN_APPROX_NONE);
     findContours(foregroundFrame, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-    sort(contours.begin(), contours.end(), ContoursSortByArea); /* Contours sort by area, controus[0] is largest */
+    sort(contours.begin(), contours.end(), [](vector<cv::Point> contour1, vector<cv::Point> contour2) {  
+            //return (contour1.size() > contour2.size()); /* Outline length */
+            return (cv::contourArea(contour1) > cv::contourArea(contour2)); /* Area */
+        }); /* Contours sort by area, controus[0] is largest */
 
     vector<Rect> boundRect( contours.size() );
     for(int i=0; i<contours.size(); i++) {
@@ -2043,7 +2033,7 @@ int main(int argc, char**argv)
     uint64_t loopCount = 0;
 
     if(bPause == false)
-        Start();
+        F3xBase::Start();
 
     while(1) {
         if(bShutdown)
@@ -2051,22 +2041,25 @@ int main(int argc, char**argv)
 
         if(bRestart) { /* Start object detection */
             if(bPause == false) 
-                Stop();
-            Start();
+                F3xBase::Stop();
+            F3xBase::Start();
             bRestart = false;
         }
 
         if(bStop) { /* Stop object detection */
             if(bPause == false) 
-                Stop();
+                F3xBase::Stop();
             bStop = false;
         }
 
         static unsigned int vPushButton = 1;
-        unsigned int gv = f3xBase.PushButton();
+        unsigned int gv = f3xBase.GetPushButton();
         if(gv == 0 && vPushButton == 1) { /* Raising edge */
             if(loopCount >= 10) { /* Button debunce */
-                OnPushButton();
+                if(bPause)
+                    F3xBase::Start();
+                else
+                    F3xBase::Stop();
                 loopCount = 0;
             }
         }
