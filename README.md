@@ -1,4 +1,4 @@
-## dragon-eye -  F3F automatic base
+## dragon-eye -  F3F real-time electronic judging system
 
 dragon-eye is an F3F real-time electronic judging system. It's base on technology of computer vision, capture video stream from camera then detect moving objects and keeps tracking them, once one of the tracking target across central vertical line, trigger out a signal. 
 
