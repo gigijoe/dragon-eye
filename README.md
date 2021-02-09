@@ -53,6 +53,19 @@ At least four rounds should be completed in order to determine the winner.
 - An program running on Ubuntu desktop for development of dragon-eye
 - It takes video file recorded by dragon-eye and output result on screen or to file
 
+#### Build & Run
+
+```
+cd dragon-eye
+mkdir build
+cd build
+cmake ../
+make
+sudo ./dragon-eye
+```
+
+Start / Stop dragon-eye object tracking from Android APP
+
 #### Donate
 
 [![paypal](https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif)](https://paypal.me/stevegigijoe)
