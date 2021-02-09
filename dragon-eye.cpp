@@ -6,6 +6,7 @@
 #include <opencv2/cudabgsegm.hpp>
 #include <opencv2/cudaobjdetect.hpp>
 #include <opencv2/cudafilters.hpp>
+#include <opencv2/cudaimgproc.hpp>
 
 #include <errno.h>
 #include <fcntl.h> 
@@ -2101,7 +2102,14 @@ int main(int argc, char**argv)
 
         /* Gray color space for whole region */
         Mat grayFrame;
+#if 0
+        cuda::GpuMat gpuCap, gpuGray;
+        gpuCap.upload(capFrame);
+        cuda::cvtColor(gpuCap, gpuGray, COLOR_BGR2GRAY);
+        gpuGray.download(grayFrame);
+#else
         cvtColor(capFrame, grayFrame, COLOR_BGR2GRAY);
+#endif
         list<Rect> roiRect;
 
         extract_moving_object(grayFrame, roiRect);
