@@ -1,6 +1,6 @@
-## dragon-eye -  F3F real-time electronic judging system
+## dragon-eye -  F3F real-time electronic judging system with Jetson Nano
 
-dragon-eye is an F3F real-time electronic judging system. It's base on technology of computer vision, capture video stream from camera then detect moving objects and keeps tracking them, once one of the tracking target across central vertical line, trigger out a signal. 
+dragon-eye is an F3F real-time electronic judging system with Jetson Nano. It's base on technology of computer vision, capture video stream from camera then detect moving objects and keeps tracking them, once one of the tracking target across central vertical line, trigger out a signal. 
 
 #### [F3F - SLOPE SOARING GLIDERS](https://www.fai.org/page/f3-radio-control-soaring)
 
@@ -20,6 +20,8 @@ At least four rounds should be completed in order to determine the winner.
 - Android APP to start / stop / config / play RTSP video stream
 - Written in c/c++ for running performance
 - Background subtraction runnung by GPU to improve real-time performance
+- Camera settings for different scenes such as dim light or over exposure
+- Adjustable MOG2 threshold to get better object tracking performance  
 
 #### Hardware Requirement 
 - nVidia Jetson Nano development kit (Prefer version B01)
