@@ -49,6 +49,7 @@ At least four rounds should be completed in order to determine the winner.
 - Start / Stop dragon-eye
 - System config / Camera config
 - Play video from RTSP server of dragon-eye
+- Play sound with trigger
 
 #### Simulator
 [dragon-eye simulator](https://github.com/gigijoe/dragon-eye-simulator)
