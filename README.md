@@ -24,7 +24,7 @@ At least four rounds should be completed in order to determine the winner.
 - Adjustable MOG2 threshold to reduce nosie or improve object detection 
 
 #### Hardware Requirement 
-- nVidia Jetson Nano development kit (Prefer version B01)
+- nVidia Jetson Nano developer kit (Prefer version B01)
 - AC8265 WIRELESS NIC module (Intel 8265NGW chipset)
 - Raspberry pi camera V2 or camera with IMX219 sensor (MIPI-CSI interface)
 - UV lens protector (37mm)
