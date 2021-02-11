@@ -21,7 +21,7 @@ At least four rounds should be completed in order to determine the winner.
 - Written in c/c++ for running performance
 - Background subtraction runnung by GPU to improve real-time performance
 - Camera settings for different scenes such as dim light or over exposure
-- Adjustable MOG2 threshold to get better object tracking performance  
+- Adjustable MOG2 threshold to reduce nosie or improve object detection 
 
 #### Hardware Requirement 
 - nVidia Jetson Nano development kit (Prefer version B01)
@@ -53,6 +53,37 @@ At least four rounds should be completed in order to determine the winner.
 - An program running on Ubuntu desktop for development of dragon-eye
 - It takes video file recorded by dragon-eye and output result on screen or to file
 
+#### I/O pin
+
+```
+RED LED - 		GPIO16
+GREEN LED - 	GPIO17
+Button - 		GPIO18 
+BLUE LED - 		GPIO50
+RELAY -			GPIO51
+
+UART2_TX - 		TTL TX
+UART2_RX - 		TTL RX
+```
+
+#### Software Prepare
+
+[Jetson Nano Initial Setup](https://stevegigijoe.blogspot.com/2019/05/jetson-nano-initial-setup.html)
+
+[Jetson Nano Camera Setup](https://stevegigijoe.blogspot.com/2019/05/jetson-naon-camera-support.html)
+
+[Jetson Nano GPIO Setup](https://stevegigijoe.blogspot.com/2019/06/jetson-nano-gpio-support.html)
+
+[Jetson Nano Wifi Hotspot](https://stevegigijoe.blogspot.com/2020/07/jetson-nano-wifi-hotspot.html)
+
+Disable GUI
+
+```
+sudo systemctl set-default multi-user.target
+```
+
+
+
 #### Build & Run
 
 ```
@@ -65,6 +96,8 @@ sudo ./dragon-eye
 ```
 
 Start / Stop dragon-eye object tracking from Android APP
+
+[Jetson Nano run program on startup](https://stevegigijoe.blogspot.com/2019/07/jetson-nano-run-program-on-startup.html)
 
 #### Donate
 
