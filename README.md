@@ -100,6 +100,7 @@ Start / Stop dragon-eye object tracking from Android APP
 [Jetson Nano run program on startup](https://stevegigijoe.blogspot.com/2019/07/jetson-nano-run-program-on-startup.html)
 
 #### TODO
+- Testing for dual camera 
 - Testing with Jetson Nano 2GB Developer Kit for low cost solution
 - 3D print camera mount 
 
