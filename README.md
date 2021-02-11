@@ -27,6 +27,8 @@ At least four rounds should be completed in order to determine the winner.
 - nVidia Jetson Nano development kit (Prefer version B01)
 - AC8265 WIRELESS NIC module (Intel 8265NGW chipset)
 - Raspberry pi camera V2 or camera with IMX219 sensor (MIPI-CSI interface)
+- UV lens protector (37mm)
+- Lens mount adapter (37mm to 34mm)
 - DC-DC power converter 7~40V to 5V / 5A power
 - Panasonic NCR18650PF 3S2P battery pack (Keeps running up to 4+ hours)
 
@@ -82,8 +84,6 @@ Disable GUI
 sudo systemctl set-default multi-user.target
 ```
 
-
-
 #### Build & Run
 
 ```
@@ -98,6 +98,10 @@ sudo ./dragon-eye
 Start / Stop dragon-eye object tracking from Android APP
 
 [Jetson Nano run program on startup](https://stevegigijoe.blogspot.com/2019/07/jetson-nano-run-program-on-startup.html)
+
+#### TODO
+- Testing with Jetson Nano 2GB Developer Kit for low cost solution
+- 3D print camera mount 
 
 #### Donate
 
