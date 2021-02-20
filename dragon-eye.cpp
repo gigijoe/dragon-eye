@@ -21,9 +21,11 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <netdb.h> 
-
+#include <netdb.h>
+#include <ifaddrs.h>
 #include <arpa/inet.h>
+#include <net/route.h>
+#include <sys/ioctl.h>
 
 using namespace cv;
 using namespace std;
@@ -52,7 +54,6 @@ extern "C" {
 #include <gstreamer-1.0/gst/app/app.h>
 }
 
-using std::chrono::high_resolution_clock;
 using std::chrono::steady_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
@@ -105,6 +106,87 @@ static bool bPause = true;
 
 static bool bRestart = false;
 static bool bStop = false;
+
+static char *ipv4_address(const char *dev) {
+    static char host[NI_MAXHOST];
+    struct ifaddrs *ifaddr, *ifa;
+    int family, s;
+
+    if(dev == 0 || strlen(dev) == 0)
+        return 0;
+
+    if(getifaddrs(&ifaddr) == -1) {
+        perror("getifaddrs");
+        return 0;
+    }
+
+    for(ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if(ifa->ifa_addr == NULL)
+            continue;  
+
+        s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+
+        if((strcmp(ifa->ifa_name, dev) == 0) && (ifa->ifa_addr->sa_family == AF_INET)) {
+            if (s != 0) {
+                printf("getnameinfo() failed: %s\n", gai_strerror(s));
+                return 0;
+            }
+            //printf("\tInterface : <%s>\n", ifa->ifa_name );
+            //printf("\t  Address : <%s>\n", host);
+            break;
+        }
+    }
+    freeifaddrs(ifaddr);
+
+    return host;
+}
+
+static int add_route(const char *_target, const char *_netmask, const char *_dev) {
+    struct rtentry route;  /* route item struct */
+    char target[128] = {0};
+    char netmask[128] = {0};
+    char dev[16] = {0};
+
+    struct sockaddr_in *addr;
+
+    int skfd;
+
+    /* clear route struct by 0 */
+    memset((char *)&route, 0x00, sizeof(route));
+
+    /* default target is net (host)*/
+    route.rt_flags = RTF_UP ;
+
+    strcpy(target, _target);
+    addr = (struct sockaddr_in*) &route.rt_dst;
+    addr->sin_family = AF_INET;
+    addr->sin_addr.s_addr = inet_addr(target);
+
+    strcpy(netmask, _netmask);
+    addr = (struct sockaddr_in*) &route.rt_genmask;
+    addr->sin_family = AF_INET;
+    addr->sin_addr.s_addr = inet_addr(netmask);
+
+    strcpy(dev, _dev);
+    route.rt_dev = dev;
+
+    /* create a socket */
+    skfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if(skfd < 0) {
+        perror("socket");
+        return -1;
+    }
+    
+    if(ioctl(skfd, SIOCADDRT, &route) < 0) {
+        perror("SIOCADDRT");
+        close(skfd);
+        return -1;
+    }
+    (void) close(skfd);
+
+    return 0;
+}
+
 /*
 *
 */
@@ -1035,7 +1117,7 @@ static Camera camera;
 
 class F3xBase {
 private:
-    int m_ttyFd, m_udpSocket;
+    int m_ttyFd, m_udpSocket, m_multicastSocket;
     BaseType_t m_baseType;
 
     jetsonNanoGPIONumber m_redLED, m_greenLED, m_blueLED, m_relay;
@@ -1066,6 +1148,9 @@ private:
 
     unsigned int m_srcIp;
     unsigned short m_srcPort;
+
+    thread m_multicastSenderThread;
+    bool m_bMulticastSenderRun;
 
     std::queue<uint8_t> m_triggerQueue;
     thread m_triggerThread;
@@ -1109,8 +1194,19 @@ private:
         return 0;
     }
 
+    void TriggerTtyTask() {
+        while(m_ttyFd) {
+            if(m_triggerQueue.size() > 0) {
+                auto data = m_triggerQueue.front();
+                m_triggerQueue.pop();
+                write(m_ttyFd, &data, sizeof(data));
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+
 public:
-    F3xBase() : m_ttyFd(0), m_udpSocket(0), m_baseType(BASE_A),
+    F3xBase() : m_ttyFd(0), m_udpSocket(0), m_multicastSocket(0), m_baseType(BASE_A),
         m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51),
         m_videoOutputScreenSwitch(gpio19), m_videoOutputFileSwitch(gpio20),
         m_baseSwitch(gpio12), m_videoOutputResultSwitch(gpio13), m_pushButton(gpio18),
@@ -1125,7 +1221,8 @@ public:
         m_mog2_threshold(16),
         m_isNewTargetRestriction(false),
         m_bUdpServerRun(false),
-        m_srcIp(0), m_srcPort(0) {
+        m_srcIp(0), m_srcPort(0),
+        m_bMulticastSenderRun(false) {
     }
 
     ~F3xBase() {
@@ -1216,6 +1313,60 @@ public:
         return m_ttyFd;
     }
 
+    int ReadTty(uint8_t *data, size_t size) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(m_ttyFd, &rfds);
+
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 0;
+
+        if(data == 0 || size == 0)
+            return 0;
+        if(select(m_ttyFd+1, &rfds, NULL, NULL, &tv) > 0) {
+            int r = read(m_ttyFd, data, size); /* Receive trigger from f3f timer */
+            if(r == size)
+                return 1;
+        }
+        return 0;
+    }
+
+    void TriggerTty(bool newTrigger) {
+        static uint8_t serNo = 0x3f;
+        uint8_t data;
+
+        if(!m_ttyFd)
+            return;
+
+        if(newTrigger) { /* It's NEW trigger */
+            if(++serNo > 0x3f)
+                serNo = 0;
+        }
+
+        if(m_baseType == BASE_A) {
+            data = (serNo & 0x3f);
+            printf("BASE_A[%d]\r\n", serNo);
+        } else if(m_baseType == BASE_B) {
+            data = (serNo & 0x3f) | 0x40;
+            printf("BASE_B[%d]\r\n", serNo);
+        }        
+#if 0
+        write(m_ttyFd, &data, 1);
+#else
+        m_triggerQueue.push(data);
+#endif
+    }
+
+    void CloseTty() {
+        if(m_ttyFd)
+            close(m_ttyFd);
+        m_ttyFd = 0;
+
+        if(m_triggerThread.joinable())
+            m_triggerThread.join();
+    }
+
     int OpenUdpSocket() {
         int sockfd;
         struct sockaddr_in addr; 
@@ -1260,61 +1411,65 @@ public:
         return m_udpSocket;
     }
 
-    void CloseTty() {
-        if(m_ttyFd)
-            close(m_ttyFd);
-        m_ttyFd = 0;
+    size_t ReadUdpSocket(uint8_t *data, size_t size, unsigned int timeoutMs) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(m_udpSocket, &rfds);
 
-        if(m_triggerThread.joinable())
-            m_triggerThread.join();
-    }
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = timeoutMs * 1000;
 
-    void CloseUdpSocket() {
-        if(m_udpSocket)
-            close(m_udpSocket);
-        m_udpSocket = 0;
-    }
+        if(data == 0 || size == 0)
+            return 0;
 
-    void TriggerTty(bool newTrigger) {
-        static uint8_t serNo = 0x3f;
-        uint8_t data;
+        if(select(m_udpSocket+1, &rfds, NULL, NULL, &tv) <= 0)
+            return 0; /* timeout */ 
 
-        if(!m_ttyFd)
-            return;
-
-        if(newTrigger) { /* It's NEW trigger */
-            if(++serNo > 0x3f)
-                serNo = 0;
-        }
-
-        if(m_baseType == BASE_A) {
-            data = (serNo & 0x3f);
-            printf("BASE_A[%d]\r\n", serNo);
-        } else if(m_baseType == BASE_B) {
-            data = (serNo & 0x3f) | 0x40;
-            printf("BASE_B[%d]\r\n", serNo);
-        }        
-#if 0
-        write(m_ttyFd, &data, 1);
+        if(FD_ISSET(m_udpSocket, &rfds) <= 0)
+            return 0;
+        
+        struct sockaddr_in from;
+        int fromLen = sizeof(from);
+        size_t originalSize = size;
+        memset(data, 0, size);
+#if 1
+        int r = recvfrom(m_udpSocket,
+               data,
+               originalSize,
+               0,
+               (struct sockaddr *)&from,
+               (socklen_t*)&fromLen);
 #else
-        m_triggerQueue.push(data);
+        int r = recv(m_udpSocket, data, originalSize, 0);
 #endif
-    }
+        if(r > 0) {
+            m_srcPort = ntohs(from.sin_port);
+            m_srcIp = ntohl(from.sin_addr.s_addr);
 
-    void TriggerTtyTask() {
-        while(m_ttyFd) {
-            if(m_triggerQueue.size() > 0) {
-                auto data = m_triggerQueue.front();
-                m_triggerQueue.pop();
-                write(m_ttyFd, &data, sizeof(data));
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            return r;
         }
+        else if(r == -1) {
+            switch(errno) {
+               case ENOTSOCK:
+                  printf("Error fd not a socket\n");
+                  break;
+               case ECONNRESET:
+                  printf("Error connection reset - host not reachable\n");
+                  break;              
+               default:
+                  printf("Socket Error : %d\n", errno);
+                  break;
+            }
+        }
+        
+        return 0;
     }
 
     size_t WriteUdpSocket(const uint8_t *data, size_t size) {
-        if(!m_udpSocket || m_srcIp == 0 || m_srcPort == 0)
+        if(!m_udpSocket)
             return 0;
+
         struct sockaddr_in to;
         int toLen = sizeof(to);
         memset(&to, 0, toLen);
@@ -1334,8 +1489,9 @@ public:
     }
 
     size_t WriteSourceUdpSocket(const uint8_t *data, size_t size) {
-        if(!m_udpSocket)
+        if(!m_udpSocket || m_srcIp == 0 || m_srcPort == 0)
             return 0;
+
         struct sockaddr_in to;
         int toLen = sizeof(to);
         memset(&to, 0, toLen);
@@ -1384,6 +1540,202 @@ public:
         WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(trigger.c_str()), trigger.size());
     }
 #endif
+    void CloseUdpSocket() {
+        if(m_udpSocket)
+            close(m_udpSocket);
+        m_udpSocket = 0;
+    }
+
+    void UdpServerTask()
+    {
+        m_bUdpServerRun = true;
+        OpenUdpSocket();
+        while(m_bUdpServerRun) {
+            if(bShutdown)
+                break;
+            uint8_t data[1024];
+            size_t r = ReadUdpSocket(data, 1024, 20);
+            if(r > 0) {
+                string s = reinterpret_cast<char *>(data);
+                istringstream iss(s);
+                vector<pair<string, string> > cfg;
+                string line;
+                if(!getline(iss, line))
+                    continue;
+                line = std::regex_replace(line, std::regex("^ +| +$|( ) +"), "$1"); /* Strip leading & tail space */
+
+                const char ack[] = "#Ack";
+                const char started[] = "#Started";
+                const char stopped[] = "#Stopped";
+
+                if(line == "#SystemSettings") {
+                    if(ParseConfigStream(iss, cfg) > 0) {
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
+                        ApplySystemConfig(cfg);
+                        SaveSystemConfig(s.substr(16)); /* Strip cmd ahead */
+                    } else { /* Request for system config */
+                        char fn[STR_SIZE];
+                        snprintf(fn, STR_SIZE, "%s/system.config", CONFIG_FILE_DIR);
+                        FILE *fp = fopen(fn, "rb");
+                        if(fp) {
+                            fseek(fp, 0L, SEEK_END);
+                            size_t sz = ftell(fp);
+                            if(sz > 0) {
+                                fseek(fp, 0L, SEEK_SET);
+                                size_t cmd_size = strlen("#SystemSettings\n");
+                                uint8_t *buf = (uint8_t *)malloc(cmd_size + sz);
+                                strcpy((char *)buf, "#SystemSettings\n");
+                                size_t r = fread(buf + cmd_size, 1, sz, fp);
+                                if(r)
+                                    WriteSourceUdpSocket(buf, cmd_size + sz);
+                                free(buf);
+                            }
+                            fclose(fp);
+                        }
+                    }
+                } else if(line == "#CameraSettings") {
+                    if(ParseConfigStream(iss, cfg) > 0) {
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
+                        camera.ApplyConfig(cfg);
+                        camera.SaveConfig(s.substr(16)); /* Strip cmd ahead */
+                    }  else { /* Request for system config */
+                        char fn[STR_SIZE];
+                        snprintf(fn, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
+                        FILE *fp = fopen(fn, "rb");
+                        if(fp) {
+                            fseek(fp, 0L, SEEK_END);
+                            size_t sz = ftell(fp);
+                            if(sz > 0) {
+                                fseek(fp, 0L, SEEK_SET);
+                                size_t cmd_size = strlen("#CameraSettings\n");
+                                uint8_t *buf = (uint8_t *)malloc(cmd_size + sz);
+                                strcpy((char *)buf, "#CameraSettings\n");
+                                size_t r = fread(buf + cmd_size, 1, sz, fp);
+                                if(r)
+                                    WriteSourceUdpSocket(buf, cmd_size + sz);
+                                free(buf);
+                            }
+                            fclose(fp);
+                        }
+                    }
+                } else if(line == "#Start") {                    
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
+                    bRestart = true;
+                } else if(line == "#Stop") {
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
+                    bStop = true;
+                } else if(line == "#Status") {
+                    if(bPause) /* Stopped */
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
+                    else
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
+                }
+            }
+        }
+        CloseUdpSocket();
+    }
+
+    void StartUdpServer() {
+        m_udpServerThread = thread(&F3xBase::UdpServerTask, this);
+    }
+
+    void StopUdpServer() {
+        if(m_udpServerThread.joinable()) {
+            m_bUdpServerRun = false;
+            m_udpServerThread.join();
+        }
+    }
+
+    int OpenMulticastSocket() {
+        int sockfd;
+
+        sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP); /* Dummy protocol for TCP.  */
+        if(sockfd < 0) {
+            printf("Error open socket !!!\n");
+            return 0;
+        }
+
+        m_multicastSocket = sockfd;
+
+        printf("Open multicast socket successful ...\n");
+        printf("Group 224.0.0.1:9001\n");
+
+        return m_multicastSocket;
+    }
+
+    size_t WriteMulticastSocket(const uint8_t *data, size_t size) {
+        if(!m_multicastSocket)
+            return 0;
+
+        struct sockaddr_in addr; 
+        const char group[] = "224.0.0.1";
+        uint16_t port = 9001;
+
+        memset((char*) &(addr),0, sizeof((addr)));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = inet_addr(group);
+        addr.sin_port = htons(port);
+
+        //printf("Write to %s:%u ...\n", group, port);
+
+        int r = sendto(m_multicastSocket, data, size, 0,(struct sockaddr*)&addr, sizeof(addr));
+        if(r < 0) {
+            if(errno == 101) { /* Network is unreachable */
+                //system("sudo ip route add 224.0.0.0/4 dev wlan0");
+                add_route(group, "255.255.255.255", "wlan0");
+            } else
+                perror("multicast");
+        }
+        return r;
+    }
+
+    void CloseMulticastSocket() {
+        if(m_multicastSocket)
+            close(m_multicastSocket);
+        m_multicastSocket = 0;
+
+        //system("sudo ip route del 224.0.0.0/4 dev wlan0");
+    }
+
+    void MulticastSenderTask() {
+        m_bMulticastSenderRun = true;
+        OpenMulticastSocket();
+        while(m_bMulticastSenderRun) {
+            if(bShutdown)
+                break;
+
+            char *ip = ipv4_address("wlan0");
+            if(ip) {
+                string raw("BASE_X");
+                switch(m_baseType) {
+                    case BASE_A: raw = "BASE_A";
+                        break;
+                    case BASE_B: raw = "BASE_B";
+                        break;
+                    default:
+                        break;
+                }
+                raw.push_back(':');
+                raw.append(ip);
+                
+                WriteMulticastSocket(reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());                
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+        CloseMulticastSocket();
+    }
+
+    void StartMulticastSender() {
+        m_multicastSenderThread = thread(&F3xBase::MulticastSenderTask, this);
+    }
+
+    void StopMulticastSender() {
+        if(m_multicastSenderThread.joinable()) {
+            m_bMulticastSenderRun = false;
+            m_multicastSenderThread.join();
+        }
+    }
+
     void ApplyHwSwitch() {
         cout << endl;
         cout << "### H/W switch" << endl; 
@@ -1594,80 +1946,6 @@ public:
         return m_isNewTargetRestriction;
     }
 
-    int ReadTty(uint8_t *data, size_t size) {
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(m_ttyFd, &rfds);
-
-        struct timeval tv;
-        tv.tv_sec = 0;
-        tv.tv_usec = 0;
-
-        if(data == 0 || size == 0)
-            return 0;
-        if(select(m_ttyFd+1, &rfds, NULL, NULL, &tv) > 0) {
-            int r = read(m_ttyFd, data, size); /* Receive trigger from f3f timer */
-            if(r == size)
-                return 1;
-        }
-        return 0;
-    }
-
-    size_t ReadUdpSocket(uint8_t *data, size_t size, unsigned int timeoutMs) {
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(m_udpSocket, &rfds);
-
-        struct timeval tv;
-        tv.tv_sec = 0;
-        tv.tv_usec = timeoutMs * 1000;
-
-        if(data == 0 || size == 0)
-            return 0;
-
-        if(select(m_udpSocket+1, &rfds, NULL, NULL, &tv) <= 0)
-            return 0; /* timeout */ 
-
-        if(FD_ISSET(m_udpSocket, &rfds) <= 0)
-            return 0;
-        
-        struct sockaddr_in from;
-        int fromLen = sizeof(from);
-        size_t originalSize = size;
-        memset(data, 0, size);
-#if 1
-        int r = recvfrom(m_udpSocket,
-               data,
-               originalSize,
-               0,
-               (struct sockaddr *)&from,
-               (socklen_t*)&fromLen);
-#else
-        int r = recv(m_udpSocket, data, originalSize, 0);
-#endif
-        if(r > 0) {
-            m_srcPort = ntohs(from.sin_port);
-            m_srcIp = ntohl(from.sin_addr.s_addr);
-
-            return r;
-        }
-        else if(r == -1) {
-            switch(errno) {
-               case ENOTSOCK:
-                  printf("Error fd not a socket\n");
-                  break;
-               case ECONNRESET:
-                  printf("Error connection reset - host not reachable\n");
-                  break;              
-               default:
-                  printf("Socket Error : %d\n", errno);
-                  break;
-            }
-        }
-        
-        return 0;
-    }
-
     void RedLed(pinValues onOff) {
         gpioSetValue(m_redLED, onOff);
     }
@@ -1688,106 +1966,6 @@ public:
         unsigned int gv;
         gpioGetValue(m_pushButton, &gv);
         return gv;
-    }
-
-    void UdpServerTask()
-    {
-        m_bUdpServerRun = true;
-        OpenUdpSocket();
-        while(m_bUdpServerRun) {
-            if(bShutdown)
-                break;
-            uint8_t data[1024];
-            size_t r = ReadUdpSocket(data, 1024, 20);
-            if(r > 0) {
-                string s = reinterpret_cast<char *>(data);
-                istringstream iss(s);
-                vector<pair<string, string> > cfg;
-                string line;
-                if(!getline(iss, line))
-                    continue;
-                line = std::regex_replace(line, std::regex("^ +| +$|( ) +"), "$1"); /* Strip leading & tail space */
-
-                const char ack[] = "#Ack";
-                const char started[] = "#Started";
-                const char stopped[] = "#Stopped";
-
-                if(line == "#SystemSettings") {
-                    if(ParseConfigStream(iss, cfg) > 0) {
-                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
-                        ApplySystemConfig(cfg);
-                        SaveSystemConfig(s.substr(16)); /* Strip cmd ahead */
-                    } else { /* Request for system config */
-                        char fn[STR_SIZE];
-                        snprintf(fn, STR_SIZE, "%s/system.config", CONFIG_FILE_DIR);
-                        FILE *fp = fopen(fn, "rb");
-                        if(fp) {
-                            fseek(fp, 0L, SEEK_END);
-                            size_t sz = ftell(fp);
-                            if(sz > 0) {
-                                fseek(fp, 0L, SEEK_SET);
-                                size_t cmd_size = strlen("#SystemSettings\n");
-                                uint8_t *buf = (uint8_t *)malloc(cmd_size + sz);
-                                strcpy((char *)buf, "#SystemSettings\n");
-                                size_t r = fread(buf + cmd_size, 1, sz, fp);
-                                if(r)
-                                    WriteSourceUdpSocket(buf, cmd_size + sz);
-                                free(buf);
-                            }
-                            fclose(fp);
-                        }
-                    }
-                } else if(line == "#CameraSettings") {
-                    if(ParseConfigStream(iss, cfg) > 0) {
-                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
-                        camera.ApplyConfig(cfg);
-                        camera.SaveConfig(s.substr(16)); /* Strip cmd ahead */
-                    }  else { /* Request for system config */
-                        char fn[STR_SIZE];
-                        snprintf(fn, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
-                        FILE *fp = fopen(fn, "rb");
-                        if(fp) {
-                            fseek(fp, 0L, SEEK_END);
-                            size_t sz = ftell(fp);
-                            if(sz > 0) {
-                                fseek(fp, 0L, SEEK_SET);
-                                size_t cmd_size = strlen("#CameraSettings\n");
-                                uint8_t *buf = (uint8_t *)malloc(cmd_size + sz);
-                                strcpy((char *)buf, "#CameraSettings\n");
-                                size_t r = fread(buf + cmd_size, 1, sz, fp);
-                                if(r)
-                                    WriteSourceUdpSocket(buf, cmd_size + sz);
-                                free(buf);
-                            }
-                            fclose(fp);
-                        }
-                    }
-                } else if(line == "#Start") {                    
-                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
-                    bRestart = true;
-                } else if(line == "#Stop") {
-                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
-                    bStop = true;
-                } else if(line == "#Status") {
-                    if(bPause) /* Stopped */
-                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
-                    else
-                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
-                }
-            }
-        }
-        CloseUdpSocket();
-    }
-
-    void StartUdpServer() {
-        m_udpServerThread = thread(&F3xBase::UdpServerTask, this);
-    }
-
-    void StopUdpServer() {
-        if(m_udpServerThread.joinable()) {
-            m_bUdpServerRun = false;
-            m_udpServerThread.join();
-        }
     }
 
     static void Start();
@@ -1956,11 +2134,6 @@ void sig_handler(int signo)
         kill(getpid(), SIGHUP); /* To stop RTSP server */
         bShutdown = true;
     } 
-/* SIGHUP is for stop rtsp server ONLY */
-    /* else if(signo == SIGHUP) { 
-        printf("SIGHUP\n");
-        bRestart = true;
-    } */
 }
 
 /*
@@ -1973,10 +2146,6 @@ int main(int argc, char**argv)
 {
     if(signal(SIGINT, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGINT\n");
-/*
-    if(signal(SIGHUP, sig_handler) == SIG_ERR)
-        printf("\ncan't catch SIGHUP\n");
-*/
 
     ofstream pf(PID_FILE); 
     if(pf) {
@@ -1994,6 +2163,7 @@ int main(int argc, char**argv)
     f3xBase.SetupGPIO();
     f3xBase.OpenTty();
     f3xBase.StartUdpServer();
+    f3xBase.StartMulticastSender();
 
     camera.LoadConfig();
     if(!camera.UpdateExposure())
@@ -2029,7 +2199,6 @@ int main(int argc, char**argv)
     cout << "### Press button to start object tracking !!!" << endl;
 
     double fps = 0;
-    //high_resolution_clock::time_point t1(high_resolution_clock::now());
     steady_clock::time_point t1(steady_clock::now());
     uint64_t loopCount = 0;
 
@@ -2075,7 +2244,7 @@ int main(int argc, char**argv)
             if(f3xBase.IsVideoOutputFile())
                 f3xBase.BlueLed(on);
 
-            usleep(20000); /* Wait 20ms */
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
             continue;
         }
 
@@ -2174,27 +2343,29 @@ int main(int argc, char**argv)
                 char str[32];
                 snprintf(str, 32, "FPS : %.2lf", fps);
                 writeText(outFrame, string(str), Point( 10, 40 ));
-/*
-                int fontFace = FONT_HERSHEY_SIMPLEX;
-                const double fontScale = 1;
-                const int thicknessScale = 1;  
-                Point textOrg(40, 40);
-                putText(outFrame, string(str), textOrg, fontFace, fontScale, Scalar(0, 255, 0), thicknessScale, cv::LINE_8);
-*/
                 videoOutputQueue.push(outFrame.clone());
             } else
                 videoOutputQueue.push(capFrame.clone());
         }
-
-//        high_resolution_clock::time_point t2(high_resolution_clock::now());
+/*
         steady_clock::time_point t2(steady_clock::now());
         double dt_us(static_cast<double>(duration_cast<microseconds>(t2 - t1).count()));
         //std::cout << "FPS : " << fixed  <<  setprecision(2) << (1000000.0 / dt_us) << std::endl;
         fps = (1000000.0 / dt_us);
         std::cout << "FPS : " << fixed  << setprecision(2) <<  fps << std::endl;
 
-//        t1 = high_resolution_clock::now();
         t1 = steady_clock::now();
+*/    
+        if(loopCount % 30 == 0) {
+            steady_clock::time_point t2(steady_clock::now());
+            double dt_us(static_cast<double>(duration_cast<microseconds>(t2 - t1).count()));
+
+            fps = 30 * (1000000.0 / dt_us);
+
+            std::cout << "FPS : " << fixed  << setprecision(2) <<  fps << std::endl;
+
+            t1 = steady_clock::now();
+        }
     }
 
     f3xBase.GreenLed(off); /* Flash during frames */
