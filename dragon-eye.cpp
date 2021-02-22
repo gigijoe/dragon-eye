@@ -82,7 +82,7 @@ using std::chrono::seconds;
 #endif
 
 #define MAX_NUM_TARGET               6      /* Maximum targets to tracing */
-#define MAX_NUM_TRIGGER              1      /* Maximum number of RF trigger after detection of cross line */
+#define MAX_NUM_TRIGGER              6      /* Maximum number of RF trigger after detection of cross line */
 #define MAX_NUM_FRAME_MISSING_TARGET 6     /* Maximum number of frames to keep tracing lost target */
 
 #define MIN_COURSE_LENGTH            120    /* Minimum course length of RF trigger after detection of cross line */
@@ -102,10 +102,10 @@ typedef enum { BASE_UNKNOWN, BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseT
 */
 
 static bool bShutdown = false;
-static bool bPause = true;
+static bool bStopped = true;
 
-static bool bRestart = false;
-static bool bStop = false;
+typedef enum { EvtStop, EvtStart } EvtType_t;
+static queue<EvtType_t> evtQueue;
 
 static char *ipv4_address(const char *dev) {
     static char host[NI_MAXHOST];
@@ -1535,8 +1535,9 @@ public:
                 serNo = 0;
         }
         //const char trigger[] = "#Trigger";
+
         string trigger("#Trigger:");
-        trigger += std::to_string(serNo);
+        trigger.append(std::to_string(serNo));
         WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(trigger.c_str()), trigger.size());
     }
 #endif
@@ -1620,12 +1621,12 @@ public:
                     }
                 } else if(line == "#Start") {                    
                     WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
-                    bRestart = true;
+                    evtQueue.push(EvtStart);
                 } else if(line == "#Stop") {
                     WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
-                    bStop = true;
+                    evtQueue.push(EvtStop);
                 } else if(line == "#Status") {
-                    if(bPause) /* Stopped */
+                    if(bStopped) /* Stopped */
                         WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
                     else
                         WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
@@ -1687,6 +1688,27 @@ public:
                 perror("multicast");
         }
         return r;
+    }
+
+    void TriggerMulticastSocket(bool newTrigger) {
+        static uint8_t serNo = 0x3f;
+        if(newTrigger) { /* It's NEW trigger */
+            if(++serNo > 0x3f)
+                serNo = 0;
+        }
+
+        string raw;
+        switch(m_baseType) {
+            case BASE_A: raw.append("TRIGGER_A");
+                break;
+            case BASE_B: raw.append("TRIGGER_B");
+                break;
+            default:
+                break;
+        }
+        raw.push_back(':');
+        raw.append(std::to_string(serNo));
+        WriteMulticastSocket(reinterpret_cast<const uint8_t *>(raw.c_str()), raw.size());
     }
 
     void CloseMulticastSocket() {
@@ -2031,7 +2053,7 @@ void F3xBase::Start()
 
     f3xBase.GreenLed(off);
 
-    bPause = false;
+    bStopped = false;
 }
 
 void F3xBase::Stop()
@@ -2048,7 +2070,7 @@ void F3xBase::Stop()
     }
     camera.Close();
 
-    bPause = true;
+    bStopped = true;
 }
 
 static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect> & roiRect)
@@ -2202,31 +2224,35 @@ int main(int argc, char**argv)
     steady_clock::time_point t1(steady_clock::now());
     uint64_t loopCount = 0;
 
-    if(bPause == false)
+    if(bStopped == false)
         F3xBase::Start();
 
     while(1) {
         if(bShutdown)
             break;
 
-        if(bRestart) { /* Start object detection */
-            if(bPause == false) 
-                F3xBase::Stop();
-            F3xBase::Start();
-            bRestart = false;
-        }
-
-        if(bStop) { /* Stop object detection */
-            if(bPause == false) 
-                F3xBase::Stop();
-            bStop = false;
+        if(evtQueue.size() > 0) {
+            EvtType_t t = evtQueue.front();
+            evtQueue.pop();
+            switch(t) {
+                case EvtStop: 
+                    if(bStopped == false) 
+                        F3xBase::Stop();
+                    break;
+                case EvtStart:
+                    if(bStopped) 
+                        F3xBase::Start();
+                    break;
+                default:
+                    break;
+            }
         }
 
         static unsigned int vPushButton = 1;
         unsigned int gv = f3xBase.GetPushButton();
         if(gv == 0 && vPushButton == 1) { /* Raising edge */
             if(loopCount >= 10) { /* Button debunce */
-                if(bPause)
+                if(bStopped)
                     F3xBase::Start();
                 else
                     F3xBase::Stop();
@@ -2237,7 +2263,7 @@ int main(int argc, char**argv)
      
         loopCount++; /* Increase loop count */
 
-        if(bPause) {
+        if(bStopped) {
             f3xBase.RedLed(off);
             f3xBase.Relay(off);
             f3xBase.GreenLed(on); /* On while pause */
@@ -2328,9 +2354,11 @@ int main(int argc, char**argv)
                         line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
                 }
                 f3xBase.TriggerTty(t->TriggerCount() == 0);
-                f3xBase.TriggerUdpSocket(t->TriggerCount() == 0);
+                //f3xBase.TriggerUdpSocket(t->TriggerCount() == 0);
+                f3xBase.TriggerMulticastSocket(t->TriggerCount() == 0);
                 f3xBase.RedLed(on);
-                f3xBase.Relay(on);
+                if(t->TriggerCount() == 0) /* Relay trigger for only once */
+                    f3xBase.Relay(on);
 
                 t->Trigger();
 
@@ -2347,16 +2375,8 @@ int main(int argc, char**argv)
             } else
                 videoOutputQueue.push(capFrame.clone());
         }
-/*
-        steady_clock::time_point t2(steady_clock::now());
-        double dt_us(static_cast<double>(duration_cast<microseconds>(t2 - t1).count()));
-        //std::cout << "FPS : " << fixed  <<  setprecision(2) << (1000000.0 / dt_us) << std::endl;
-        fps = (1000000.0 / dt_us);
-        std::cout << "FPS : " << fixed  << setprecision(2) <<  fps << std::endl;
 
-        t1 = steady_clock::now();
-*/    
-        if(loopCount % 30 == 0) {
+        if(loopCount > 0 && loopCount % 30 == 0) {
             steady_clock::time_point t2(steady_clock::now());
             double dt_us(static_cast<double>(duration_cast<microseconds>(t2 - t1).count()));
 
@@ -2374,7 +2394,7 @@ int main(int argc, char**argv)
     f3xBase.Relay(off);
 
     if(f3xBase.IsVideoOutput()) {
-        if(bPause == false) {
+        if(bStopped == false) {
             videoOutputQueue.cancel();
             videoOutputThread.join();
         }
