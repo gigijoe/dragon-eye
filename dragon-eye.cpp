@@ -370,7 +370,15 @@ public:
 #endif    
     inline void Trigger() { m_triggerCount++; }
     inline uint8_t TriggerCount() { return m_triggerCount; }
-    //inline Point & Velocity() { return m_velocity; }
+    inline Point & Velocity() { return m_velocity; }
+    inline double NormVelocity() { return norm(m_velocity); }
+    int AverageArea() {
+        uint32_t a = 0;
+        for(auto r : m_rects) {
+            a += r.area();
+        }
+        return a / m_rects.size();
+    }
     inline size_t TrackedCount() { return m_rects.size(); }
 
     friend class Tracker;
@@ -483,16 +491,10 @@ public:
                         break;
                     }
 #endif
-                    if(rr->x < (CAMERA_WIDTH / 5)) {
-                        if(a > 0.9659 && 
-                            n2 < (n0)) { /* cos(PI/12) */
-                            break;
-                        }                        
-                    } else {
-                        if(a > 0.9659 && 
-                            n2 < (n0 * 2)) { /* cos(PI/12) */
-                            break;
-                        }
+                    /* This number has been tested by various video. Don't touch it !!! */
+                    if(a > 0.9659 && 
+                        n2 < (n0 * 2)) { /* cos(PI/12) */
+                        break;
                     }
                 }
             }
@@ -2475,23 +2477,20 @@ int main(int argc, char**argv)
             if(t->TriggerCount() > 0 && t->TriggerCount() < MAX_NUM_TRIGGER) {
                 doTrigger = true;
             } else if(t->ArcLength() > MIN_COURSE_LENGTH && 
-                    t->TrackedCount() > MIN_TARGET_TRACKED_COUNT) {
-#if 0
-                if(t->EndPoint().x < (CAMERA_WIDTH / 5) &&
-#else
-                if(
-#endif
-                    t->VectorCount() <= 6 &&
-                    t->VectorDistortion() >= 40) { /* 最大位移向量與最小位移向量的比例 */
-                    printf("Vector distortion %f !!!\n", t->VectorDistortion());
-                } else {
-                    if((t->BeginPoint().y > cy && t->EndPoint().y <= cy) ||
-                        (t->BeginPoint().y < cy && t->EndPoint().y >= cy)) {
-                        if(t->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
-                            doTrigger = true;
-                        }
+                t->TrackedCount() > MIN_TARGET_TRACKED_COUNT) {
+                if((t->BeginPoint().y > cy && t->EndPoint().y <= cy) ||
+                    (t->BeginPoint().y < cy && t->EndPoint().y >= cy)) {
+                    if(t->VectorCount() <= 6 &&
+                        t->VectorDistortion() >= 40) { /* 最大位移向量與最小位移向量的比例 */
+                        printf("Velocity distortion %f !!!\n", t->VectorDistortion());
+                    } else if(t->AverageArea() < 150 &&
+                        t->NormVelocity() > 50) {
+                        printf("Bug detected !!! average area = %d, velocity = %f\n", t->AverageArea(), t->NormVelocity());
+                    } else if(t->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
+                        doTrigger = true;
                     }
                 }
+                
             }
 
             if(doTrigger) {
