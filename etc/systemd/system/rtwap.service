@@ -1,0 +1,14 @@
+[Unit]
+Description=Rtl8188eu AP
+BindsTo=sys-subsystem-net-devices-wlan9.device
+After=sys-subsystem-net-devices-wlan9.device
+
+[Service]
+ExecStart=/usr/local/bin/control_ap start wlan9 eth0
+ExecStop=/usr/local/bin/control_ap stop
+Type=oneshot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+

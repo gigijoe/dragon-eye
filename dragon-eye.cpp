@@ -26,6 +26,7 @@
 #include <arpa/inet.h>
 #include <net/route.h>
 #include <sys/ioctl.h>
+#include <linux/if.h>
 
 using namespace cv;
 using namespace std;
@@ -1242,9 +1243,12 @@ static Camera camera;
 *
 */
 
+#define WLAN_STA    "wlan0"
+#define WLAN_AP     "wlan9"
+
 class F3xBase {
 private:
-    int m_ttyFd, m_udpSocket, m_multicastSocket;
+    int m_ttyFd, m_udpSocket, m_apMulticastSocket, m_staMulticastSocket;
     BaseType_t m_baseType;
 
     jetsonNanoGPIONumber m_redLED, m_greenLED, m_blueLED, m_relay;
@@ -1333,7 +1337,7 @@ private:
     }
 
 public:
-    F3xBase() : m_ttyFd(0), m_udpSocket(0), m_multicastSocket(0), m_baseType(BASE_A),
+    F3xBase() : m_ttyFd(0), m_udpSocket(0), m_apMulticastSocket(0), m_staMulticastSocket(0), m_baseType(BASE_A),
         m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51),
         m_videoOutputScreenSwitch(gpio19), m_videoOutputFileSwitch(gpio20),
         m_baseSwitch(gpio12), m_videoOutputResultSwitch(gpio13), m_pushButton(gpio18),
@@ -1774,7 +1778,18 @@ public:
         }
     }
 
-    int OpenMulticastSocket() {
+    int OpenMulticastSocket(const char *group, uint16_t port, const char *ifname) {
+        printf("Open multicast socket %s : group %s:%u\n", ifname, group, port);
+
+        if(group == 0 || strlen(group) == 0)
+            return 0;
+        if(ifname == 0 || strlen(ifname) == 0)
+            return 0;
+
+        char *ip = ipv4_address(ifname);
+        if(ip == 0)
+            return 0;
+
         int sockfd;
 
         sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP); /* Dummy protocol for TCP.  */
@@ -1783,38 +1798,69 @@ public:
             return 0;
         }
 
-        m_multicastSocket = sockfd;
+        struct sockaddr_in addr; 
 
-        printf("Open multicast socket successful ...\n");
-        printf("Group 224.0.0.1:9001\n");
+        memset((char*) &(addr),0, sizeof((addr)));
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        addr.sin_port = htons(port);
 
-        return m_multicastSocket;
+        if(bind(sockfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in)) < 0) {
+            printf("Error bind socket !!!\n");
+            close(sockfd);
+            return 0;
+        }
+
+        int flag = 1;
+        setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&flag, sizeof(flag));
+        //setsockopt(sockfd, SOL_SOCKET, SO_BROADCAST, (char*)&flag, sizeof(flag));
+        unsigned char loop = 0;
+        setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_LOOP, (const char*)&loop, sizeof(loop));
+        unsigned char ttl = 255;
+        setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_TTL, (const char*)&ttl, sizeof(ttl));
+
+        struct ip_mreq mreq;
+        // use setsockopt() to request that the kernel join a multicast group
+        mreq.imr_multiaddr.s_addr = inet_addr(group);
+        //mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+        mreq.imr_interface.s_addr = inet_addr(ip); /* wlan9 ip address */
+
+        setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, (const char*)&mreq.imr_interface.s_addr, sizeof(struct sockaddr_in));
+        setsockopt(sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (const char*)&mreq, sizeof(mreq));
+
+        return sockfd; 
     }
 
-    size_t WriteMulticastSocket(const uint8_t *data, size_t size) {
-        if(!m_multicastSocket)
+    size_t WriteMulticastSocket(int sockfd, const char *group, uint16_t port, const char *ifname, const uint8_t *data, size_t size) {
+        if(!sockfd)
+            return 0;
+        if(group == 0 || strlen(group) == 0)
             return 0;
 
         struct sockaddr_in addr; 
-        const char group[] = "224.0.0.1";
-        uint16_t port = 9001;
 
         memset((char*) &(addr),0, sizeof((addr)));
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = inet_addr(group);
         addr.sin_port = htons(port);
 
-        //printf("Write to %s:%u ...\n", group, port);
-
-        int r = sendto(m_multicastSocket, data, size, 0,(struct sockaddr*)&addr, sizeof(addr));
-        if(r < 0) {
-            if(errno == 101) { /* Network is unreachable */
-                //system("sudo ip route add 224.0.0.0/4 dev wlan0");
-                add_route(group, "255.255.255.255", "wlan0");
-            } else
-                perror("multicast");
+        int ret = 0;
+        struct ifreq ifr;
+        memset(&ifr, 0, sizeof(ifr));
+        ifr.ifr_addr.sa_family = AF_INET;
+        strcpy(ifr.ifr_ifrn.ifrn_name, ifname);
+        if(ioctl(sockfd, SIOCGIFFLAGS, &ifr) >= 0 &&
+            (ifr.ifr_flags &IFF_UP)) {
+            if(setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname)) == -1) {
+                printf("setsocketopt %s SO_BINDTODEVICE fail !!!\n", ifname);
+            } else {
+                int r = sendto(sockfd, data, size, 0,(struct sockaddr*)&addr, sizeof(addr));
+                if(r < 0)
+                    perror(ifname);
+                else
+                    ret = r;
+            }
         }
-        return r;
     }
 
     void TriggerMulticastSocket(bool newTrigger) {
@@ -1835,26 +1881,25 @@ public:
         }
         raw.push_back(':');
         raw.append(std::to_string(serNo));
-        WriteMulticastSocket(reinterpret_cast<const uint8_t *>(raw.c_str()), raw.size());
-    }
 
-    void CloseMulticastSocket() {
-        if(m_multicastSocket)
-            close(m_multicastSocket);
-        m_multicastSocket = 0;
-
-        //system("sudo ip route del 224.0.0.0/4 dev wlan0");
+        if(m_apMulticastSocket)
+            WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
+        if(m_staMulticastSocket)
+            WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
     }
 
     void MulticastSenderTask() {
         m_bMulticastSenderRun = true;
-        OpenMulticastSocket();
+
+        m_apMulticastSocket = OpenMulticastSocket("224.0.0.2", 9002, WLAN_AP);
+        m_staMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
+
         while(m_bMulticastSenderRun) {
             if(bShutdown)
                 break;
 
-            char *ip = ipv4_address("wlan0");
-            if(ip) {
+            char *ip = ipv4_address(WLAN_AP);
+            if(ip && m_apMulticastSocket) {
                 string raw("BASE_X");
                 switch(m_baseType) {
                     case BASE_A: raw = "BASE_A";
@@ -1867,11 +1912,37 @@ public:
                 raw.push_back(':');
                 raw.append(ip);
                 
-                WriteMulticastSocket(reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());                
+                WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
             }
+
+            ip = ipv4_address(WLAN_STA);
+            if(ip && m_staMulticastSocket) {
+                string raw("BASE_X");
+                switch(m_baseType) {
+                    case BASE_A: raw = "BASE_A";
+                        break;
+                    case BASE_B: raw = "BASE_B";
+                        break;
+                    default:
+                        break;
+                }
+                raw.push_back(':');
+                raw.append(ip);
+                
+                WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
+            }
+
             std::this_thread::sleep_for(std::chrono::seconds(2));
         }
-        CloseMulticastSocket();
+        
+        if(m_apMulticastSocket) {
+            close(m_apMulticastSocket);
+            m_apMulticastSocket = 0;
+        }
+        if(m_staMulticastSocket) {
+            close(m_staMulticastSocket);
+            m_staMulticastSocket = 0;
+        }
     }
 
     void StartMulticastSender() {

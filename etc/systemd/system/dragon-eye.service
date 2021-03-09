@@ -1,6 +1,6 @@
 [Unit]
 Description=Dragon Eye
-After=nvargus-daemon.service
+After=network.target nvargus-daemon.service
 
 [Service]
 ExecStart=/usr/local/bin/dragon-eye

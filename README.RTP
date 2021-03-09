@@ -1,0 +1,9 @@
+Use rpt.sdp with VLC
+
+VLC -> Media -> Open Network Stream 
+
+Network -> rtp://@10.0.0.228:5000
+
+File -> Add -> rtp.sdp -> Play
+
+
