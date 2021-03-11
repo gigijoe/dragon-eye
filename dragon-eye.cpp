@@ -33,6 +33,7 @@ using namespace std;
 
 #include <chrono>
 #include <condition_variable>
+#include <atomic>
 #include <iostream>
 #include <mutex>
 #include <queue>
@@ -89,7 +90,7 @@ using std::chrono::seconds;
 #define MIN_COURSE_LENGTH            120    /* Minimum course length of RF trigger after detection of cross line */
 #define MIN_TARGET_TRACKED_COUNT     4      /* Minimum target tracked count of RF trigger after detection of cross line */
 
-#define VIDEO_OUTPUT_DIR             "Videos" /* $(HOME)/Videos/ */
+#define VIDEO_OUTPUT_DIR             "/home/gigijoe/Videos" /* $(HOME)/Videos/ */
 #define VIDEO_OUTPUT_FILE_NAME       "base"
 #define VIDEO_FILE_OUTPUT_DURATION   90     /* Video file duration 90 secends */
 #define VIDEO_OUTPUT_MAX_FILES       100
@@ -574,10 +575,11 @@ public:
     struct cancelled {};
 
 public:
-    FrameQueue() : isCancelled(false) {}
+    FrameQueue() : isCancelled(false), refCnt(0) {}
 
     void push(Mat const & image);
-    Mat pop();
+    void pop();
+    Mat front();
 
     void cancel();
     void reset();
@@ -587,6 +589,8 @@ private:
     std::mutex matMutex;
     std::condition_variable condEvent;
     bool isCancelled;
+
+    std::atomic_long refCnt;
 };
 
 void FrameQueue::cancel()
@@ -603,23 +607,66 @@ void FrameQueue::push(cv::Mat const & image)
 
     std::unique_lock<std::mutex> mlock(matMutex);
     matQueue.push(image);
-    condEvent.notify_one();
+    condEvent.notify_all();
 }
-
+#if 0
 Mat FrameQueue::pop()
 {
     std::unique_lock<std::mutex> mlock(matMutex);
 
     while (matQueue.empty()) {
-        if (isCancelled)
+        if (isCancelled) {
+cout << __FILE__ << ":" << __LINE__ << endl;
             throw cancelled();
+        }
         condEvent.wait(mlock);
-        if (isCancelled)
+        //condEvent.wait_for(mlock, chrono::milliseconds(100));
+        if (isCancelled) {
+cout << __FILE__ << ":" << __LINE__ << endl;
             throw cancelled();
+        }
     }
     Mat image(matQueue.front());
     matQueue.pop();
     return image;
+}
+#else
+void FrameQueue::pop()
+{
+    std::unique_lock<std::mutex> mlock(matMutex);
+
+    while(matQueue.empty()) {
+        if (isCancelled) {
+            throw cancelled();
+        }
+        condEvent.wait(mlock);
+        if (isCancelled) {
+            throw cancelled();
+        }
+    }
+
+    if(--refCnt == 0)
+        matQueue.pop();
+}
+#endif
+
+Mat FrameQueue::front()
+{
+    std::unique_lock<std::mutex> mlock(matMutex);
+
+    while (matQueue.empty()) {
+        if (isCancelled) {
+            throw cancelled();
+        }
+        condEvent.wait(mlock);
+        if (isCancelled) {
+            throw cancelled();
+        }
+    }
+
+    ++refCnt;
+
+    return matQueue.front();
 }
 
 void FrameQueue::reset()
@@ -647,7 +694,7 @@ typedef struct {
 static void
 need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 {
-    ctx->lastFrame = videoOutputQueue.pop();
+    ctx->lastFrame = videoOutputQueue.front();
 
     GstBuffer *buffer;
     uint64_t size=CAMERA_WIDTH * CAMERA_HEIGHT * 4; // Image size * deth of BGRx;
@@ -669,6 +716,9 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
             raw[offset+3] = 127;
         }
     }
+
+    videoOutputQueue.pop();
+
     gst_buffer_unmap (buffer, &map);
 
     /* increment the timestamp every 1/FPS second */
@@ -813,7 +863,7 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
     if(isVideoOutputFile) {       
         char filePath[64];
         while(videoOutoutIndex < VIDEO_OUTPUT_MAX_FILES) {
-            snprintf(filePath, 64, "%s/%s/%s%c%03d.mkv", getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+            snprintf(filePath, 64, "%s/%s%c%03d.mkv", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
             FILE *fp = fopen(filePath, "rb");
             if(fp) { /* file exist ... */
                 fclose(fp);
@@ -826,25 +876,25 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
         /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s/%s%c%03d.mkv ", 
-            30, getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
+            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #if 0 /* Always start from index 0 */
         /* 90 secs duration, maximum 100 files */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
                    nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! \
-                   splitmuxsink muxer=matroskamux sink=filesink location=%s/%s/%s%c%%03d.mkv max-size-time=90000000000 max-files=100 async-finalize=true async-handling=true ", 
-            30, getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B');
+                   splitmuxsink muxer=matroskamux sink=filesink location=%s/%s%c%%03d.mkv max-size-time=90000000000 max-files=100 async-finalize=true async-handling=true ", 
+            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B');
 #endif
 #if 0 /* NOT work, due to tee */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! \
 tee name=t \
-t. ! queue ! matroskamux ! filesink location=%s/%s/%s%c%03d.mkv  \
+t. ! queue ! matroskamux ! filesink location=%s/%s%c%03d.mkv  \
 t. ! queue ! video/x-h265, stream-format=byte-stream ! h265parse ! rtph265pay mtu=1400 ! \
 udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
-            30, getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #endif
         outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
         cout << endl;
@@ -911,7 +961,9 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 
     try {
         while(1) {
-            Mat frame = videoOutputQueue.pop();
+            //Mat frame = videoOutputQueue.pop();
+            Mat frame = videoOutputQueue.front();
+
             if(isVideoOutputFile) {
                 outFile.write(frame);
 
@@ -951,6 +1003,8 @@ nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamu
                 outHLS.write(frame);
             //if(isVideoOutputRTSP)
             //    outRTSP.write(frame);
+
+            videoOutputQueue.pop();
         }
     } catch (FrameQueue::cancelled & /*e*/) {
         // Nothing more to process, we're done
@@ -1057,12 +1111,12 @@ public:
     string ispdigitalgainrange; /* Default null */
     string exposuretimerange; /* Default null */
     int exposurecompensation = 0;
-    int exposurethreshold = 255;
+    int exposurethreshold = 5;
 //    int width, height;
 
     Camera() : sensor_id(0), wbmode(0), tnr_mode(1), tnr_strength(-1), ee_mode(1), ee_strength(-1), 
         gainrange("1 16"), ispdigitalgainrange("1 8"), exposuretimerange("5000000 10000000"),
-        exposurecompensation(0) {
+        exposurecompensation(0), exposurethreshold(5) {
     }
 
     bool Open() {
@@ -1071,7 +1125,7 @@ public:
 /* Reference : nvarguscamerasrc.txt */
 /* export GST_DEBUG=2 to show debug message */
 #if 0
-    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=0 wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 20000000\" exposurecompensation=0 ! \
+    snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=0 wbmode=0 tnr-mode=2 tnr-strength=1 ee-mode=1 ee-strength=0 gainrange=\"1 16\" ispdigitalgainrange=\"1 8\" exposuretimerange=\"5000000 10000000\" exposurecompensation=0 ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
         CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
@@ -1158,7 +1212,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             out.close();
         }
     }
-
+#if 0
     bool UpdateExposure() {
         bool isCameraOpened = cap.isOpened(); /* Used to keep camera open / close status */
 
@@ -1235,6 +1289,22 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 
         return true;
     }
+#else
+    void UpdateExposure() {
+        const char *exposureTimeRange[6] = {
+            "\"125000 500000\"",
+            "\"250000 1000000\"",
+            "\"500000 2000000\"",
+            "\"1000000 5000000\"",
+            "\"3000000 8000000\"",
+            "\"5000000 10000000\"",
+        };
+
+        if(exposurethreshold >= 0 && exposurethreshold <= 5) {
+            exposuretimerange = exposureTimeRange[exposurethreshold];
+        }
+    }
+#endif
 };
 
 static Camera camera; 
@@ -2266,6 +2336,7 @@ void F3xBase::Stop()
         if(videoOutputThread.joinable())
             videoOutputThread.join();
     }
+
     camera.Close();
 
     bStopped = true;
@@ -2386,8 +2457,7 @@ int main(int argc, char**argv)
     f3xBase.StartMulticastSender();
 
     camera.LoadConfig();
-    if(!camera.UpdateExposure())
-        return 1;
+    camera.UpdateExposure();
 
     int cx = CAMERA_WIDTH - 1;
     int cy = (CAMERA_HEIGHT / 2) - 1;
@@ -2554,8 +2624,11 @@ int main(int argc, char**argv)
                     if(t->VectorCount() <= 6 &&
                         t->VectorDistortion() >= 40) { /* 最大位移向量與最小位移向量的比例 */
                         printf("Velocity distortion %f !!!\n", t->VectorDistortion());
-                    } else if(t->AverageArea() < 150 &&
+                    } else if(t->AverageArea() < 200 &&
                         t->NormVelocity() > 50) {
+                        printf("Bug detected !!! average area = %d, velocity = %f\n", t->AverageArea(), t->NormVelocity());
+                    } else if(t->AverageArea() < 400 &&
+                        t->NormVelocity() > 100) {
                         printf("Bug detected !!! average area = %d, velocity = %f\n", t->AverageArea(), t->NormVelocity());
                     } else if(t->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
                         doTrigger = true;
