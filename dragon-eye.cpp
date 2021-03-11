@@ -982,8 +982,8 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 
                     snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s/%s%c%03d.mkv ", 
-                        30, getenv("HOME"), VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
+                        30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 
                     outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
                     cout << endl;
