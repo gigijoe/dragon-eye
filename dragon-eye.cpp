@@ -93,7 +93,7 @@ using std::chrono::seconds;
 #define VIDEO_OUTPUT_DIR             "/home/gigijoe/Videos" /* $(HOME)/Videos/ */
 #define VIDEO_OUTPUT_FILE_NAME       "base"
 #define VIDEO_FILE_OUTPUT_DURATION   90     /* Video file duration 90 secends */
-#define VIDEO_OUTPUT_MAX_FILES       100
+#define VIDEO_OUTPUT_MAX_FILES       200
 
 #define STR_SIZE                     1024
 #define CONFIG_FILE_DIR              "/etc/dragon-eye"
@@ -188,6 +188,20 @@ static int add_route(const char *_target, const char *_netmask, const char *_dev
     (void) close(skfd);
 
     return 0;
+}
+
+/*
+*
+*/
+
+// Get current date/time, format is YYYY-MM-DD.HH:mm:ss
+const std::string currentDateTime() {
+    time_t now = time(0);
+    struct tm tstruct;
+    char buf[80];
+    tstruct = *localtime(&now);
+    strftime(buf, sizeof(buf), "%H:%M:%S %m/%d", &tstruct);
+    return buf;
 }
 
 /*
@@ -293,7 +307,7 @@ public:
 #endif
         m_rects.push_back(roi);
         m_frameTick = frameTick;
-#if 1
+#if 0
         if(m_triggerCount >= MAX_NUM_TRIGGER)
             Reset();
 #endif
@@ -428,6 +442,10 @@ public:
             
             for(rr=roiRect.begin();rr!=roiRect.end();++rr) {
 
+                if(r1.area() > (rr->area() * 100) ||
+                    rr->area() > (r1.area() * 100))
+                    continue;
+
                 double n1 = cv::norm(rr->tl() - r1.tl());
 #if 1
                 if(n1 > (CAMERA_HEIGHT / 2))
@@ -471,6 +489,11 @@ public:
             if(rr == roiRect.end() && 
                 t->m_vectors.size() > 0) { /* Target missing ... */
                 for(rr=roiRect.begin();rr!=roiRect.end();++rr) { /* */
+
+                    if(r1.area() > (rr->area() * 100) ||
+                        rr->area() > (r1.area() * 100))
+                        continue;
+
                     double n1 = cv::norm(rr->tl() - r1.tl());
 #if 1
                     if(n1 > (CAMERA_HEIGHT / 2))
@@ -2583,8 +2606,9 @@ int main(int argc, char**argv)
                 if(f3xBase.IsNewTargetRestriction()) {
                     Rect nr = tracker.NewTargetRestriction();
                     rectangle( outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
-                    writeText( outFrame, "New Target Restriction Area", Point(0, 180));    
+                    writeText( outFrame, "New Target Restriction Area", Point(0, 180));
                 }
+                writeText( outFrame, currentDateTime(), Point(240, 40));
                 line(outFrame, Point((CAMERA_WIDTH / 5), 0), Point((CAMERA_WIDTH / 5), CAMERA_HEIGHT), Scalar(127, 127, 0), 1);
             }
         }
@@ -2621,13 +2645,13 @@ int main(int argc, char**argv)
                 t->TrackedCount() > MIN_TARGET_TRACKED_COUNT) {
                 if((t->BeginPoint().y > cy && t->EndPoint().y <= cy) ||
                     (t->BeginPoint().y < cy && t->EndPoint().y >= cy)) {
-                    if(t->VectorCount() <= 6 &&
+                    if(t->VectorCount() <= 8 &&
                         t->VectorDistortion() >= 40) { /* 最大位移向量與最小位移向量的比例 */
                         printf("Velocity distortion %f !!!\n", t->VectorDistortion());
                     } else if(t->AverageArea() < 200 &&
                         t->NormVelocity() > 50) {
                         printf("Bug detected !!! average area = %d, velocity = %f\n", t->AverageArea(), t->NormVelocity());
-                    } else if(t->AverageArea() < 400 &&
+                    } else if(t->AverageArea() < 600 &&
                         t->NormVelocity() > 100) {
                         printf("Bug detected !!! average area = %d, velocity = %f\n", t->AverageArea(), t->NormVelocity());
                     } else if(t->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
