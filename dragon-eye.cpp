@@ -59,6 +59,7 @@ extern "C" {
 using std::chrono::steady_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
+using std::chrono::milliseconds;
 
 //using std::chrono::system_clock;
 using std::chrono::seconds;
@@ -93,7 +94,7 @@ using std::chrono::seconds;
 #define VIDEO_OUTPUT_DIR             "/home/gigijoe/Videos" /* $(HOME)/Videos/ */
 #define VIDEO_OUTPUT_FILE_NAME       "base"
 #define VIDEO_FILE_OUTPUT_DURATION   90     /* Video file duration 90 secends */
-#define VIDEO_OUTPUT_MAX_FILES       200
+#define VIDEO_OUTPUT_MAX_FILES       400    /* Needs about 30G bytes disk space */
 
 #define STR_SIZE                     1024
 #define CONFIG_FILE_DIR              "/etc/dragon-eye"
@@ -227,6 +228,7 @@ protected:
     double m_arcLength;
     unsigned long m_frameTick;
     uint8_t m_triggerCount;
+    uint16_t m_bugTriggerCount;
 
     vector< Rect > m_rects;
     vector< Point > m_vectors;
@@ -250,7 +252,7 @@ protected:
     }
 
 public:
-    Target(Rect & roi, unsigned long frameTick) : m_arcLength(0), m_frameTick(frameTick), m_triggerCount(0), m_maxVector(0), m_minVector(0) {
+    Target(Rect & roi, unsigned long frameTick) : m_arcLength(0), m_frameTick(frameTick), m_triggerCount(0), m_bugTriggerCount(0), m_maxVector(0), m_minVector(0) {
         m_rects.push_back(roi);
         m_frameTick = frameTick;
     }
@@ -386,6 +388,10 @@ public:
 #endif    
     inline void Trigger() { m_triggerCount++; }
     inline uint8_t TriggerCount() { return m_triggerCount; }
+
+    inline void BugTrigger() { m_bugTriggerCount++; }
+    inline uint16_t BugTriggerCount() { return m_bugTriggerCount; }
+
     inline Point & Velocity() { return m_velocity; }
     inline double NormVelocity() { return norm(m_velocity); }
     int AverageArea() {
@@ -1127,13 +1133,13 @@ public:
     int sensor_id = 0;
     int wbmode = 0;
     int tnr_mode = 1;
-    int tnr_strength = -1;
+    float tnr_strength = -1;
     int ee_mode = 1;
-    int ee_strength = -1;
+    float ee_strength = -1;
     string gainrange; /* Default null */
     string ispdigitalgainrange; /* Default null */
     string exposuretimerange; /* Default null */
-    int exposurecompensation = 0;
+    float exposurecompensation = 0;
     int exposurethreshold = 5;
 //    int width, height;
 
@@ -1153,7 +1159,7 @@ video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, fr
 nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
         CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
 #else
-        snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%d ee-mode=%d ee-strength=%d gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%d ! \
+        snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%f ee-mode=%d ee-strength=%f gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%f ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
             sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
@@ -1199,11 +1205,11 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             else if(it->first == "tnr-mode")
                 tnr_mode = stoi(it->second);
             else if(it->first == "tnr-strength")
-                tnr_strength = stoi(it->second);
+                tnr_strength = stof(it->second);
             else if(it->first == "ee-mode")
                 ee_mode = stoi(it->second);
             else if(it->first == "ee-strength")
-                ee_strength = stoi(it->second);
+                ee_strength = stof(it->second);
             else if(it->first == "gainrange")
                 gainrange = it->second;
             else if(it->first == "ispdigitalgainrange")
@@ -1211,7 +1217,7 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
             else if(it->first == "exposuretimerange")
                 exposuretimerange = it->second;
             else if(it->first == "exposurecompensation")
-                exposurecompensation = stoi(it->second);
+                exposurecompensation = stof(it->second);
             else if(it->first == "exposurethreshold")
                 exposurethreshold = stoi(it->second);
         }
@@ -2518,6 +2524,8 @@ int main(int argc, char**argv)
     if(bStopped == false)
         F3xBase::Start();
 
+    steady_clock::time_point lastTriggerTime(steady_clock::now());
+
     while(1) {
         if(bShutdown)
             break;
@@ -2576,6 +2584,8 @@ int main(int argc, char**argv)
 
         Mat capFrame;
         camera.Read(capFrame);
+
+        steady_clock::time_point t3(steady_clock::now());
 
         Mat outFrame;
         if(f3xBase.IsVideoOutputResult()) {
@@ -2648,14 +2658,31 @@ int main(int argc, char**argv)
                     if(t->VectorCount() <= 8 &&
                         t->VectorDistortion() >= 40) { /* 最大位移向量與最小位移向量的比例 */
                         printf("Velocity distortion %f !!!\n", t->VectorDistortion());
-                    } else if(t->AverageArea() < 200 &&
-                        t->NormVelocity() > 50) {
+                    } else if(t->AverageArea() < 144 && /* 12 x 12 */
+                        t->NormVelocity() > 25) {
                         printf("Bug detected !!! average area = %d, velocity = %f\n", t->AverageArea(), t->NormVelocity());
-                    } else if(t->AverageArea() < 600 &&
+                        t->BugTrigger();
+                    } else if(t->AverageArea() < 256 && /* 16 x 16 */
+                        t->NormVelocity() > 40) {
+                        printf("Bug detected !!! average area = %d, velocity = %f\n", t->AverageArea(), t->NormVelocity());
+                        t->BugTrigger();
+                    } else if(t->AverageArea() < 400 && /* 20 x 20 */
+                        t->NormVelocity() > 75) {
+                        printf("Bug detected !!! average area = %d, velocity = %f\n", t->AverageArea(), t->NormVelocity());
+                        t->BugTrigger();
+                    } else if(t->AverageArea() < 576 && /* 24 x 24 */
                         t->NormVelocity() > 100) {
                         printf("Bug detected !!! average area = %d, velocity = %f\n", t->AverageArea(), t->NormVelocity());
+                        t->BugTrigger();
+                    } else if(t->AverageArea() < 900 && /* 30 x 30 */
+                        t->NormVelocity() > 125) {
+                        printf("Bug detected !!! average area = %d, velocity = %f\n", t->AverageArea(), t->NormVelocity());
+                        t->BugTrigger();
                     } else if(t->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 3 times maximum  */
-                        doTrigger = true;
+                        if(t->BugTriggerCount() > 0)
+                            printf("False trigger due to bug trigger count is %u\n", t->BugTriggerCount());
+                        else
+                            doTrigger = true;
                     }
                 }
                 
@@ -2670,8 +2697,12 @@ int main(int argc, char**argv)
                 //f3xBase.TriggerUdpSocket(t->TriggerCount() == 0);
                 f3xBase.TriggerMulticastSocket(t->TriggerCount() == 0);
                 f3xBase.RedLed(on);
-                if(t->TriggerCount() == 0) /* Relay trigger for only once */
-                    f3xBase.Relay(on);
+                if(t->TriggerCount() == 0) { /* Relay trigger for only once */
+                    if(duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count() > 500) {
+                        f3xBase.Relay(on);
+                        lastTriggerTime = steady_clock::now();
+                    }
+                }
 
                 t->Trigger();
 
@@ -2695,7 +2726,7 @@ int main(int argc, char**argv)
 
             fps = 30 * (1000000.0 / dt_us);
 
-            std::cout << "FPS : " << fixed  << setprecision(2) <<  fps << std::endl;
+            std::cout << "FPS : " << fixed  << setprecision(2) <<  fps << " / " << duration_cast<milliseconds>(t2 - t3).count() << " ms" << std::endl;
 
             t1 = steady_clock::now();
         }
