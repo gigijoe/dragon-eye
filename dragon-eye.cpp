@@ -608,7 +608,7 @@ public:
 
     void push(Mat const & image);
     void pop();
-    Mat front();
+    const Mat & front();
 
     void cancel();
     void reset();
@@ -638,28 +638,7 @@ void FrameQueue::push(cv::Mat const & image)
     matQueue.push(image);
     condEvent.notify_all();
 }
-#if 0
-Mat FrameQueue::pop()
-{
-    std::unique_lock<std::mutex> mlock(matMutex);
 
-    while (matQueue.empty()) {
-        if (isCancelled) {
-cout << __FILE__ << ":" << __LINE__ << endl;
-            throw cancelled();
-        }
-        condEvent.wait(mlock);
-        //condEvent.wait_for(mlock, chrono::milliseconds(100));
-        if (isCancelled) {
-cout << __FILE__ << ":" << __LINE__ << endl;
-            throw cancelled();
-        }
-    }
-    Mat image(matQueue.front());
-    matQueue.pop();
-    return image;
-}
-#else
 void FrameQueue::pop()
 {
     std::unique_lock<std::mutex> mlock(matMutex);
@@ -677,9 +656,8 @@ void FrameQueue::pop()
     if(--refCnt == 0)
         matQueue.pop();
 }
-#endif
 
-Mat FrameQueue::front()
+const Mat & FrameQueue::front()
 {
     std::unique_lock<std::mutex> mlock(matMutex);
 
@@ -714,7 +692,6 @@ static FrameQueue videoOutputQueue;
 */
 
 typedef struct {
-    Mat lastFrame;
     int numberFrames;
     GstClockTime timestamp;
 } RtspServerContext;
@@ -723,8 +700,6 @@ typedef struct {
 static void
 need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 {
-    ctx->lastFrame = videoOutputQueue.front();
-
     GstBuffer *buffer;
     uint64_t size=CAMERA_WIDTH * CAMERA_HEIGHT * 4; // Image size * deth of BGRx;
     GstFlowReturn ret;
@@ -735,8 +710,11 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
     gst_buffer_map (buffer, &map, GST_MAP_WRITE); // make buffer writable
     raw = (gint8 *)map.data;
 
+//cout << __PRETTY_FUNCTION__ << ":" << __LINE__ << endl;
+    const Mat & lastFrame = videoOutputQueue.front();
+
     for (int i=0;i<CAMERA_HEIGHT;i++) {
-        Vec3b* ptr = ctx->lastFrame.ptr<Vec3b>(i);
+        const Vec3b* ptr = lastFrame.ptr<Vec3b>(i);
         for (int j = 0; j<CAMERA_WIDTH; j++) {
             uint64_t offset = ((i*CAMERA_WIDTH)+j)*4;
             raw[offset] = ptr[j][0];
@@ -991,7 +969,7 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
     try {
         while(1) {
             //Mat frame = videoOutputQueue.pop();
-            Mat frame = videoOutputQueue.front();
+            const Mat & frame = videoOutputQueue.front();
 
             if(isVideoOutputFile) {
                 outFile.write(frame);
