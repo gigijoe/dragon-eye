@@ -105,6 +105,14 @@ Start / Stop dragon-eye object tracking from Android APP
 - Testing with Jetson Nano 2GB Developer Kit for low cost solution
 - 3D print camera mount 
 
+#### Notice of Setup
+
+#### MOG2 Threshold
+
+#### Fake Target Detection
+
+#### Bug Trigger
+
 #### Donate
 
 [![paypal](https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif)](https://paypal.me/stevegigijoe)
