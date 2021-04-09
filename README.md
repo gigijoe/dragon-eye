@@ -23,10 +23,23 @@ At least four rounds should be completed in order to determine the winner.
 - Camera settings for different scenes such as dim light or over exposure
 - Adjustable MOG2 threshold to reduce nosie or improve object detection 
 
-#### Hardware Requirement 
+#### Hardware Standard Requirement 
 - nVidia Jetson Nano developer kit (Prefer version B01)
-- AC8265 WIRELESS NIC module (Intel 8265NGW chipset)
-- Raspberry pi camera V2 or camera with IMX219 sensor (MIPI-CSI interface)
+- Cooling fan for Jetson Nano
+- ( Option ) AC8265 WIRELESS NIC module (Intel 8265NGW chipset)
+- EDIMAX EW-7811Un V2 N150 USB wifi dongle
+- Raspberry pi camera V2 or camera with IMX219 sensor (MIPI-CSI interface) FoV 77 degree 
+- Raspberry pi camera V2 or camera with IMX219 sensor (MIPI-CSI interface) FoV 160 degree 
+- UV lens protector (37mm) x 2
+- Lens mount adapter (37mm to 34mm) x 2
+- DC-DC power converter 7~40V to 5V / 5A power
+- Panasonic NCR18650PF 3S2P battery pack (Keeps running up to 7+ hours)
+
+#### Hardware Cost-Down Requirement
+- nVidia Jetson Nano 2GB developer kit
+- Cooling fan for Jetson Nano
+- EDIMAX EW-7811Un V2 N150 USB wifi dongle
+- Raspberry pi camera V2 or camera with IMX219 sensor (MIPI-CSI interface) FoV 77 degree / FoV 160 degree
 - UV lens protector (37mm)
 - Lens mount adapter (37mm to 34mm)
 - DC-DC power converter 7~40V to 5V / 5A power
