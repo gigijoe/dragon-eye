@@ -1785,10 +1785,10 @@ public:
 
         if(m_baseType == BASE_A) {
             data = (serNo & 0x3f);
-            printf("BASE_A[%d]\r\n", serNo);
+            printf("TriggerTty : BASE_A[%d]\r\n", serNo);
         } else if(m_baseType == BASE_B) {
             data = (serNo & 0x3f) | 0x40;
-            printf("BASE_B[%d]\r\n", serNo);
+            printf("TriggerTty : BASE_B[%d]\r\n", serNo);
         }        
 #if 0
         write(m_ttyFd, &data, 1);
@@ -2181,8 +2181,10 @@ public:
         string raw;
         switch(m_baseType) {
             case BASE_A: raw.append("TRIGGER_A");
+                printf("TriggerMulticastSocket : BASE_A[%d]\r\n", serNo);
                 break;
             case BASE_B: raw.append("TRIGGER_B");
+                printf("TriggerMulticastSocket : BASE_B[%d]\r\n", serNo);
                 break;
             default:
                 break;
@@ -2505,6 +2507,8 @@ public:
     }
 
     void Relay(pinValues onOff) {
+if(onOff)
+    printf("Relay %s\n", onOff ? "on" : "off");        
         gpioSetValue(m_relay, onOff);
     }
 
@@ -2880,48 +2884,52 @@ int main(int argc, char**argv)
             }
         }
 
+        bool doTrigger = false;
+
         for(list< Target >::iterator t=targets.begin();t!=targets.end();++t) {
-            if(f3xBase.IsVideoOutputResult()) {
+            if(f3xBase.IsVideoOutputResult()) { 
                 if(f3xBase.IsVideoOutput()) {
-                    t->Draw(outFrame, true);
+                    t->Draw(outFrame, true); /* Draw target */
                 }
             }
 
-            bool doTrigger = false;
-            if(t->TriggerCount() > 0 && t->TriggerCount() < MAX_NUM_TRIGGER) {
+            if(t->TriggerCount() > 0 && t->TriggerCount() < MAX_NUM_TRIGGER)
                 doTrigger = true;
-            } else if(t->ArcLength() > MIN_COURSE_LENGTH && 
+
+            if(t->ArcLength() > MIN_COURSE_LENGTH && 
                 t->AbsLength() > MIN_COURSE_LENGTH && 
                 t->TrackedCount() > MIN_TARGET_TRACKED_COUNT) {
                 if((t->BeginCenterPoint().y > cy && t->EndCenterPoint().y <= cy) ||
-                    (t->BeginCenterPoint().y < cy && t->EndCenterPoint().y >= cy)||
-                    (t->PreviousCenterPoint().y > cy && t->CurrentCenterPoint().y <= cy) ||
-                    (t->PreviousCenterPoint().y < cy && t->CurrentCenterPoint().y >= cy)) {
-                    if(t->TriggerCount() < MAX_NUM_TRIGGER) { /* Triggle 4 times maximum  */
-                        doTrigger = t->Trigger(f3xBase.IsBugTrigger());
-                    }
+                        (t->BeginCenterPoint().y < cy && t->EndCenterPoint().y >= cy)||
+                        (t->PreviousCenterPoint().y > cy && t->CurrentCenterPoint().y <= cy) ||
+                        (t->PreviousCenterPoint().y < cy && t->CurrentCenterPoint().y >= cy)) {
+                    bool tgr = t->Trigger(f3xBase.IsBugTrigger());
+                    if(doTrigger == false)
+                        doTrigger = tgr;
                 }
-                
+            }
+        }
+
+        if(doTrigger) { /* t->TriggerCount() > 0 */
+            if(f3xBase.IsVideoOutputResult()) {
+                if(f3xBase.IsVideoOutput())
+                    line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
             }
 
-            if(doTrigger) {
-                if(f3xBase.IsVideoOutputResult()) {
-                    if(f3xBase.IsVideoOutput())
-                        line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
-                }
-                f3xBase.TriggerTty(t->TriggerCount() == 0);
-                //f3xBase.TriggerUdpSocket(t->TriggerCount() == 0);
-                f3xBase.TriggerMulticastSocket(t->TriggerCount() == 0);
-                f3xBase.RedLed(on);
-                if(t->TriggerCount() == 0) { /* Relay trigger for only once */
-                    if(duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count() > 500) {
-                        f3xBase.Relay(on);
-                        lastTriggerTime = steady_clock::now();
-                    }
-                }
-                break; /* Has been trigger, ignore other targets */
+            bool isNewTrigger = false;
+            if(duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count() > 500) { /* new trigger */
+                isNewTrigger = true;
+                lastTriggerTime = steady_clock::now();
             }
-        }        
+
+            f3xBase.TriggerTty(isNewTrigger);
+            //f3xBase.TriggerUdpSocket(t->TriggerCount() == 0);
+            f3xBase.TriggerMulticastSocket(isNewTrigger);
+            f3xBase.RedLed(on);
+
+            if(isNewTrigger)
+                f3xBase.Relay(on);
+        }         
 
         if(f3xBase.IsVideoOutput()) {
             if(f3xBase.IsVideoOutputResult()) {

@@ -33,7 +33,8 @@ At least four rounds should be completed in order to determine the winner.
 - UV lens protector (37mm) x 2
 - Lens mount adapter (37mm to 34mm) x 2
 - DC-DC power converter 7~40V to 5V / 5A power
-- Panasonic NCR18650PF 3S2P battery pack (Keeps running up to 7+ hours)
+- Panasonic NCR18650PF 3S2P battery pack (Keeps running up to 8+ hours)
+- 64GB up SDHC card
 
 #### Hardware Cost-Down Requirement
 - nVidia Jetson Nano 2GB developer kit
@@ -43,7 +44,8 @@ At least four rounds should be completed in order to determine the winner.
 - UV lens protector (37mm)
 - Lens mount adapter (37mm to 34mm)
 - DC-DC power converter 7~40V to 5V / 5A power
-- Panasonic NCR18650PF 3S2P battery pack (Keeps running up to 7+ hours)
+- Panasonic NCR18650PF 3S2P battery pack (Keeps running up to 8+ hours)
+- 64GB up SDHC card
 
 #### Software Requirement
 - nVidia Jetpack 4.4 [LT4 32.4.3] or later
