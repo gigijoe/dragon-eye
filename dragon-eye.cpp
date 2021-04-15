@@ -1556,10 +1556,8 @@ private:
     BaseType_t m_baseType;
 
     jetsonNanoGPIONumber m_redLED, m_greenLED, m_blueLED, m_relay;
-    jetsonNanoGPIONumber m_videoOutputScreenSwitch, m_videoOutputFileSwitch;
-    jetsonNanoGPIONumber m_baseSwitch, m_videoOutputResultSwitch, m_pushButton;
+    jetsonNanoGPIONumber m_pushButton;
 
-    bool m_isBaseHwSwitch;
     bool m_isVideoOutputScreen;
     bool m_isVideoOutputFile;
     bool m_isVideoOutputRTP;
@@ -1644,10 +1642,7 @@ private:
 
 public:
     F3xBase() : m_ttyFd(0), m_udpSocket(0), m_apMulticastSocket(0), m_staMulticastSocket(0), m_baseType(BASE_A),
-        m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51),
-        m_videoOutputScreenSwitch(gpio19), m_videoOutputFileSwitch(gpio20),
-        m_baseSwitch(gpio12), m_videoOutputResultSwitch(gpio13), m_pushButton(gpio18),
-        m_isBaseHwSwitch(false), 
+        m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51), m_pushButton(gpio18),
         m_isVideoOutputScreen(false), 
         m_isVideoOutputFile(false), 
         m_isVideoOutputRTP(false), 
@@ -1693,18 +1688,7 @@ public:
         gpioSetValue(m_relay, off);
 
         /* Input */
-        gpioExport(m_videoOutputScreenSwitch);
-        gpioExport(m_videoOutputFileSwitch);
-
-        gpioExport(m_baseSwitch);
-        gpioExport(m_videoOutputResultSwitch);
         gpioExport(m_pushButton);
-
-        gpioSetDirection(m_videoOutputScreenSwitch, inputPin); /* Base A / B */
-        gpioSetDirection(m_videoOutputFileSwitch, inputPin); /* Video output on / off */
-
-        gpioSetDirection(m_baseSwitch, inputPin);
-        gpioSetDirection(m_videoOutputResultSwitch, inputPin);
         gpioSetDirection(m_pushButton, inputPin); /* Pause / Restart */
 
     #if 0
@@ -2266,45 +2250,6 @@ public:
         }
     }
 
-    void ApplyHwSwitch() {
-        cout << endl;
-        cout << "### H/W switch" << endl; 
-
-        unsigned int gv;
-        gpioGetValue(m_baseSwitch, &gv);
-
-        if(gv == 0) 
-            m_baseType = BASE_A;
-        else
-            m_baseType = BASE_B;
-
-        printf("\n### BASE %c\n", gv ? 'B' : 'A');
-
-        gpioGetValue(m_videoOutputScreenSwitch, &gv);
-        if(gv == 0) /* pull low */
-            m_isVideoOutputScreen = true;
-        else                    
-            m_isVideoOutputScreen = false;
-
-        printf("### Video output screen : %s\n", m_isVideoOutputScreen ? "Enable" : "Disable");
-
-        gpioGetValue(m_videoOutputFileSwitch, &gv);
-        if(gv == 0)
-            m_isVideoOutputFile = true;
-        else
-            m_isVideoOutputFile = false;
-
-        printf("### Video output file : %s\n", m_isVideoOutputFile ? "Enable" : "Disable");
-
-        gpioGetValue(m_videoOutputResultSwitch, &gv);
-        if(gv == 0)
-            m_isVideoOutputResult = true;
-        else
-            m_isVideoOutputResult = false;                
-
-        printf("### Video output result : %s\n", m_isVideoOutputResult ? "Enable" : "Disable");
-    } 
-
     void ApplySystemConfig(vector<pair<string, string> > & cfg)
     {
         cout << endl;
@@ -2320,12 +2265,6 @@ public:
                     m_baseType = BASE_B;
                 else
                     m_baseType = BASE_UNKNOWN;
-            } else if(it->first == "base.hwswitch") {
-                if(it->second == "yes" || it->second == "1")
-                    m_isBaseHwSwitch = true;
-                else
-                    m_isBaseHwSwitch = false;
-            } else if(it->first == "base.trigger.reset") { /* triggle then reset target */
             } else if(it->first == "base.new.target.restriction") { /* triggle then reset target */
                 if(it->second == "yes" || it->second == "1")
                     m_isNewTargetRestriction = true;
@@ -2424,10 +2363,6 @@ public:
 
     inline BaseType_t BaseType() const {
         return m_baseType;
-    }
-
-    inline bool IsBaseHwSwitch() {
-        return m_isBaseHwSwitch;        
     }
 
     inline bool IsVideoOutputScreen() const {
@@ -2541,9 +2476,6 @@ static thread videoOutputThread;
 
 void F3xBase::Start()
 {
-    if(f3xBase.IsBaseHwSwitch()) /* Overwrite config by HW switch */
-        f3xBase.ApplyHwSwitch();
-
     if(f3xBase.IsNewTargetRestriction())
         //tracker.NewTargetRestriction(Rect(cy - 200, cx - 200, 400, 200));
         tracker.NewTargetRestriction(Rect(0, 180, 180, 360));
@@ -2721,8 +2653,6 @@ int main(int argc, char**argv)
     std::cout << cv::getBuildInformation() << std::endl;
 
     f3xBase.LoadSystemConfig();
-    if(f3xBase.IsBaseHwSwitch()) /* Overwrite config by HW switch */
-        f3xBase.ApplyHwSwitch();
     f3xBase.SetupGPIO();
     f3xBase.OpenTty();
     f3xBase.StartUdpServer();
