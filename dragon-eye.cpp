@@ -2442,8 +2442,11 @@ public:
     }
 
     void Relay(pinValues onOff) {
-if(onOff)
-    printf("Relay %s\n", onOff ? "on" : "off");        
+        static pinValues s_onOff = off;
+        if(onOff != s_onOff) {
+            printf("Relay %s\n", onOff ? "on" : "off");
+            s_onOff = onOff;     
+        }
         gpioSetValue(m_relay, onOff);
     }
 
