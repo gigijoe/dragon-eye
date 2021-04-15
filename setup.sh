@@ -4,7 +4,7 @@ sudo apt-get install cmake git
 sudo apt-get install python-pip
 sudo apt-get install python3-pip python3-pil
 
-sudo apt-get install gstreamer1.0-tools gstreamer1.0-alsa \ 
+sudo apt-get install gstreamer1.0-tools gstreamer1.0-alsa \
 gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
 gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
 gstreamer1.0-libav
@@ -15,7 +15,7 @@ libgstreamer-plugins-good1.0-dev \
 libgstreamer-plugins-bad1.0-dev \
 libgstrtspserver-1.0-dev
 
-sudo apt-get install libgtk2.0-dev
+sudo apt-get install libgtk2.0-dev
 
 sudo apt-get install cmake
 
@@ -37,5 +37,9 @@ sudo make install
 cd ../..
 
 sudo -H pip3 install jetson-stats
+
+sudo systemctl disable gdm3
+sudo systemctl set-default multi-user.target
+
 
 
