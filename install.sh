@@ -2,8 +2,18 @@
 
 cp -av ./etc/systemd/system/* /etc/systemd/system/
 cp -av ./etc/udev/rules.d/* /etc/udev/rules.d/
+cp -av ./etc/NetworkManager/NetworkManager.conf /etc/NetworkManager/
 
-#Copy wifi AP files of Rtl8188eu 
+cd rtl8188eu
+make
+sudo make install
+cd hostapd-0.8/hostapd/
+cp defconfig .config
+make
+cp -av hostapd /usr/local/bin
+cd ../../..
+
+#Copy wifi AP control file of Rtl8188eu 
 cp -av ./usr/local/bin/* /usr/local/bin
 
 # Copy camera settings
@@ -21,3 +31,5 @@ systemctl enable dragon-eye
 
 mkdir -p ${HOME}/Videos
 
+sudo apt-get install samba -y
+cp -av ./etc/samba/smb.conf /etc/samba

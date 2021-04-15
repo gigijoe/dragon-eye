@@ -103,12 +103,15 @@ sudo systemctl set-default multi-user.target
 #### Build & Run
 
 ```
+git clone --recursive https://github.com/gigijoe/dragon-eye.git
+
 cd dragon-eye
 mkdir build
 cd build
 cmake ../
 make
-sudo ./dragon-eye
+sudo make install
+sudo /usr/local/bin/dragon-eye
 ```
 
 Start / Stop dragon-eye object tracking from Android APP

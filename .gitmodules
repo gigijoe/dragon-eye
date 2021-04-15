@@ -2,3 +2,6 @@
 	path = jetsonGPIO
 	url = https://github.com/gigijoe/jetsonTX2GPIO
 	ignore = dirty
+[submodule "rtl8188eu"]
+	path = rtl8188eu
+	url = https://github.com/lwfinger/rtl8188eu.git
