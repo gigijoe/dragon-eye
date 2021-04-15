@@ -1565,9 +1565,6 @@ private:
     bool m_isVideoOutputRTSP;
     bool m_isVideoOutputResult;
 
-    string m_udpRemoteHost;
-    uint16_t m_udpRemotePort;
-
     uint16_t m_udpLocalPort;
 
     string m_rtpRemoteHost;
@@ -1649,7 +1646,8 @@ public:
         m_isVideoOutputHLS(false),
         m_isVideoOutputRTSP(false),
         m_isVideoOutputResult(false),
-        m_udpRemotePort(4999), m_udpLocalPort(4999), m_rtpRemotePort(5000),
+        m_udpLocalPort(4999), 
+        m_rtpRemotePort(5000),
         m_mog2_threshold(16),
         m_isNewTargetRestriction(false),
         m_isFakeTargetDetection(false),
@@ -1790,14 +1788,9 @@ public:
             m_triggerThread.join();
     }
 
-    int OpenUdpSocket() {
+    int OpenUdpSocket(uint16_t port) {
         int sockfd;
         struct sockaddr_in addr; 
-
-        if(m_udpRemoteHost.empty()) {
-            printf("Invalid UDP host !!!\n");
-            return 0;
-        }
 
         sockfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if(sockfd < 0) {
@@ -1808,7 +1801,7 @@ public:
         memset((char*) &(addr),0, sizeof((addr)));
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        addr.sin_port = htons(m_udpLocalPort);
+        addr.sin_port = htons(port);
 
         if(bind(sockfd,(struct sockaddr*)&addr, sizeof(addr)) != 0) {
             switch(errno) {
@@ -1870,6 +1863,10 @@ public:
             m_srcPort = ntohs(from.sin_port);
             m_srcIp = ntohl(from.sin_addr.s_addr);
 
+            struct sockaddr_in sa;
+            char buffer[INET_ADDRSTRLEN];
+            inet_ntop( AF_INET, &from.sin_addr, buffer, sizeof(buffer));
+            printf("Receive UDP from %s:%u", buffer, m_srcPort);
             return r;
         }
         else if(r == -1) {
@@ -1888,7 +1885,7 @@ public:
         
         return 0;
     }
-
+#if 0
     size_t WriteUdpSocket(const uint8_t *data, size_t size) {
         if(!m_udpSocket)
             return 0;
@@ -1910,7 +1907,7 @@ public:
 
         return s;
     }
-
+#endif
     size_t WriteSourceUdpSocket(const uint8_t *data, size_t size) {
         if(!m_udpSocket || m_srcIp == 0 || m_srcPort == 0)
             return 0;
@@ -1923,47 +1920,37 @@ public:
         to.sin_port = htons(m_srcPort);
         to.sin_addr.s_addr = htonl(m_srcIp);
         
-        //printf("Write to %s:%u ...\n", m_udpRemoteHost.c_str(), m_udpRemotePort);
+        //printf("Write to %s:%u ...\n", m_srcIp.c_str(), m_srcPort);
         
         int s = sendto(m_udpSocket, data, size, 0,(struct sockaddr*)&to, toLen);
 
         return s;
     }
-#if 0
-    void TriggerUdpSocket(bool newTrigger) {
-        static uint8_t serNo = 0x3f;
-        uint8_t data[1];
 
-        if(!m_udpSocket)
-            return;
-
-        if(newTrigger) { /* It's NEW trigger */
-            if(++serNo > 0x3f)
-                serNo = 0;
-        }
-        if(m_baseType == BASE_A) {
-            data[0] = (serNo & 0x3f);
-            printf("BASE_A[%d]\r\n", serNo);            
-        } else if(m_baseType == BASE_B) {
-            data[0] = (serNo & 0x3f) | 0x40;
-            printf("BASE_B[%d]\r\n", serNo);
-        }        
-        WriteUdpSocket(data, 1);
-    }
-#else
-    void TriggerUdpSocket(bool newTrigger) {
+    void TriggerSourceUdpSocket(bool newTrigger) {
         static uint8_t serNo = 0x3f;
         if(newTrigger) { /* It's NEW trigger */
             if(++serNo > 0x3f)
                 serNo = 0;
         }
-        //const char trigger[] = "#Trigger";
 
-        string trigger("#Trigger:");
-        trigger.append(std::to_string(serNo));
-        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(trigger.c_str()), trigger.size());
+        string raw;
+        switch(m_baseType) {
+            case BASE_A: raw.append("TRIGGER_A");
+                printf("TriggerSourceUdpSocket : BASE_A[%d]\r\n", serNo);
+                break;
+            case BASE_B: raw.append("TRIGGER_B");
+                printf("TriggerSourceUdpSocket : BASE_B[%d]\r\n", serNo);
+                break;
+            default:
+                break;
+        }
+        raw.push_back(':');
+        raw.append(std::to_string(serNo));
+
+        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(raw.c_str()), raw.size());
     }
-#endif
+
     void CloseUdpSocket() {
         if(m_udpSocket)
             close(m_udpSocket);
@@ -1973,7 +1960,7 @@ public:
     void UdpServerTask()
     {
         m_bUdpServerRun = true;
-        OpenUdpSocket();
+        OpenUdpSocket(m_udpLocalPort);
         while(m_bUdpServerRun) {
             if(bShutdown)
                 break;
@@ -2290,15 +2277,6 @@ public:
                         cout << "Out of range " << it->first << "=" << s << endl;
                 } else
                     cout << "Invalid " << it->first << "=" << s << endl;
-            } else if(it->first == "base.udp.remote.host") {
-                if(IsValidateIpAddress(it->second))
-                    m_udpRemoteHost = it->second;
-            } else if(it->first == "base.udp.remote.port") {
-                string & s = it->second;
-                if(::all_of(s.begin(), s.end(), ::isdigit))
-                    m_udpRemotePort = stoi(s);
-                else
-                    cout << "Invalid " << it->first << "=" << s << endl;
             } else if(it->first == "base.rtp.remote.host") {
                 if(IsValidateIpAddress(it->second))
                     m_rtpRemoteHost = it->second;
@@ -2393,16 +2371,6 @@ public:
 
     inline bool IsVideoOutputRTSP() const {
         return m_isVideoOutputRTSP;
-    }
-
-    const char *UdpRemoteHost() {
-        if(m_udpRemoteHost.empty())
-            return 0;
-        return m_udpRemoteHost.c_str();
-    }
-
-    inline uint16_t UdpRemotePort() {
-        return m_udpRemotePort;
     }
 
     inline bool IsVideoOutput() const {
@@ -2856,7 +2824,7 @@ int main(int argc, char**argv)
             }
 
             f3xBase.TriggerTty(isNewTrigger);
-            //f3xBase.TriggerUdpSocket(t->TriggerCount() == 0);
+            f3xBase.TriggerSourceUdpSocket(isNewTrigger);
             f3xBase.TriggerMulticastSocket(isNewTrigger);
             f3xBase.RedLed(on);
 
