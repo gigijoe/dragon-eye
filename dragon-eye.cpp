@@ -95,7 +95,7 @@ using std::chrono::seconds;
 #define MIN_COURSE_LENGTH            30     /* Minimum course length of RF trigger after detection of cross line */
 #define MIN_TARGET_TRACKED_COUNT     3      /* Minimum target tracked count of RF trigger after detection of cross line */
 
-#define VIDEO_OUTPUT_DIR             "/home/gigijoe/Videos" /* $(HOME)/Videos/ */
+#define VIDEO_OUTPUT_DIR             "/opt/Videos"
 #define VIDEO_OUTPUT_FILE_NAME       "base"
 #define VIDEO_FILE_OUTPUT_DURATION   90     /* Video file duration 90 secends */
 #define VIDEO_OUTPUT_MAX_FILES       400    /* Needs about 30G bytes disk space */
@@ -1866,7 +1866,7 @@ public:
             struct sockaddr_in sa;
             char buffer[INET_ADDRSTRLEN];
             inet_ntop( AF_INET, &from.sin_addr, buffer, sizeof(buffer));
-            printf("Receive UDP from %s:%u", buffer, m_srcPort);
+            printf("\nReceive UDP from %s:%u\n", buffer, m_srcPort);
             return r;
         }
         else if(r == -1) {

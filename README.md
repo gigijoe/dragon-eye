@@ -22,6 +22,7 @@ At least four rounds should be completed in order to determine the winner.
 - Background subtraction runnung by GPU to improve real-time performance
 - Camera settings for different scenes such as dim light or over exposure
 - Adjustable MOG2 threshold to reduce nosie or improve object detection 
+- Supports Jetson Nano 2GB Developer Kit for low cost solution
 
 #### Hardware Standard Requirement 
 - nVidia Jetson Nano developer kit (Prefer version B01)
@@ -65,6 +66,7 @@ At least four rounds should be completed in order to determine the winner.
 - System config / Camera config
 - Play video from RTSP server of dragon-eye
 - Play sound with trigger
+- F3F Timer
 
 #### Simulator
 [dragon-eye simulator](https://github.com/gigijoe/dragon-eye-simulator)
@@ -97,6 +99,7 @@ UART2_RX - 		TTL RX
 Disable GUI
 
 ```
+sudo systemctl disable gdm3
 sudo systemctl set-default multi-user.target
 ```
 
@@ -111,16 +114,11 @@ cd build
 cmake ../
 make
 sudo make install
-sudo /usr/local/bin/dragon-eye
+sudo ./install.sh
+sudo reboot
 ```
 
-Start / Stop dragon-eye object tracking from Android APP
-
-[Jetson Nano run program on startup](https://stevegigijoe.blogspot.com/2019/07/jetson-nano-run-program-on-startup.html)
-
 #### TODO
-- Testing for dual camera 
-- Testing with Jetson Nano 2GB Developer Kit for low cost solution
 - 3D print camera mount 
 
 #### Notice of Setup

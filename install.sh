@@ -14,7 +14,7 @@ cp -av hostapd /usr/local/bin
 cd ../../..
 
 #Copy wifi AP control file of Rtl8188eu 
-cp -av ./usr/local/bin/* /usr/local/bin
+cp -av ./usr/local/bin/control_ap /usr/local/bin
 
 # Copy camera settings
 cp camera_overrides.isp /var/nvidia/nvcam/settings
@@ -29,7 +29,7 @@ cp -av ./etc/dragon-eye/* /etc/dragon-eye/
 systemctl enable rtwap
 systemctl enable dragon-eye
 
-mkdir -p ${HOME}/Videos
+mkdir -p /opt/Videos
 
 sudo apt-get install samba -y
 cp -av ./etc/samba/smb.conf /etc/samba
