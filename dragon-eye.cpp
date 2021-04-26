@@ -128,6 +128,7 @@ static char *ipv4_address(const char *dev) {
         return 0;
     }
 
+    bool found = false;
     for(ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
         if(ifa->ifa_addr == NULL)
             continue;  
@@ -141,10 +142,15 @@ static char *ipv4_address(const char *dev) {
             }
             //printf("\tInterface : <%s>\n", ifa->ifa_name );
             //printf("\t  Address : <%s>\n", host);
+            printf("\tipv4 <%s> %s\n", ifa->ifa_name, host);
+            found = true;
             break;
         }
     }
     freeifaddrs(ifaddr);
+
+    if(found == false)
+        return 0;
 
     return host;
 }
@@ -215,9 +221,10 @@ const std::string currentDateTime() {
 
 inline void writeText( Mat & mat, const string text, const Point textOrg)
 {
-   int fontFace = FONT_HERSHEY_SIMPLEX;
-   double fontScale = 1;
-   int thickness = 1;  
+   //int fontFace = FONT_HERSHEY_SIMPLEX; 
+   int fontFace = FONT_HERSHEY_DUPLEX;
+   double fontScale = 2;
+   int thickness = 2;  
    //Point textOrg( 10, 40 );
    putText( mat, text, textOrg, fontFace, fontScale, Scalar(0, 0, 0), thickness, cv::LINE_8 );
 }
@@ -1552,7 +1559,7 @@ static Camera camera;
 
 class F3xBase {
 private:
-    int m_ttyFd, m_udpSocket, m_apMulticastSocket, m_staMulticastSocket;
+    int m_ttyUSB0Fd, m_ttyTHS1Fd, m_udpSocket, m_apMulticastSocket, m_staMulticastSocket;
     BaseType_t m_baseType;
 
     jetsonNanoGPIONumber m_redLED, m_greenLED, m_blueLED, m_relay;
@@ -1586,6 +1593,9 @@ private:
 
     std::queue<uint8_t> m_triggerQueue;
     thread m_triggerThread;
+    thread m_jy901sThread;
+
+    int m_roll, m_pitch, m_yaw;
 
     int SetupTTY(int fd, int speed, int parity) {
         struct termios tty;
@@ -1626,19 +1636,68 @@ private:
         return 0;
     }
 
-    void TriggerTtyTask() {
-        while(m_ttyFd) {
+    void TriggerTtyUSB0Task() {
+        while(m_ttyUSB0Fd) {
             if(m_triggerQueue.size() > 0) {
                 auto data = m_triggerQueue.front();
                 m_triggerQueue.pop();
-                write(m_ttyFd, &data, sizeof(data));
+                write(m_ttyUSB0Fd, &data, sizeof(data));
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
+    void ReadTtyTHS1Task() {
+        while(m_ttyTHS1Fd) {
+            uint8_t header[1] = { 0x00 };
+            size_t r = ReadTty(m_ttyTHS1Fd, header, 1);
+            if(r != 1)
+                continue;
+            if(header[0] == 0x55) {
+                uint8_t command[1] = { 0x00 };
+                r = ReadTty(m_ttyTHS1Fd, command, 1);
+                if(r != 1)
+                    continue;
+                if(command[0] >= 0x50 && command[0] <= 0x5a) {
+                    if(command[0] == 0x53) { /* Angle output */
+                        uint8_t data[9];
+                        r = ReadTty(m_ttyTHS1Fd, data, 9);
+                        if(r != 9)
+                            continue;
+                        uint8_t sum = header[0] + command[0];
+                        for(int i=0;i<8;i++) {
+                            sum += data[i];
+                        }
+                        if(sum != data[8]) {
+                            printf("0x%02x 0x%02x checksum error !!!\n", header[0], command[0]);
+                        } else {
+                            m_roll = ((data[1] << 8) | data[0]) * 180 / 32768;
+                            m_pitch = ((data[3] << 8) | data[2]) * 180 / 32768;
+                            m_yaw = ((data[5] << 8) | data[4]) * 180 / 32768;
+                            printf("Raw %d, Pitch %d, Yaw %d\n", m_roll, m_pitch, m_yaw);
+                        }
+                    }
+                } else
+                    continue;
+            }
+
+
+#if 0
+            uint8_t data[16];
+            size_t r = ReadTty(m_ttyTHS1Fd, data, 16);
+            if(r > 0) {
+                printf("[ JY901s ] ");
+                for(size_t i=0;i<r;i++)
+                    printf("0x%02x ", data[i]);
+                printf("\n");
+            }
+#endif
+            //std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+
 public:
-    F3xBase() : m_ttyFd(0), m_udpSocket(0), m_apMulticastSocket(0), m_staMulticastSocket(0), m_baseType(BASE_A),
+    F3xBase() : m_ttyUSB0Fd(0), m_ttyTHS1Fd(0), m_udpSocket(0), m_apMulticastSocket(0), m_staMulticastSocket(0), m_baseType(BASE_A),
         m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51), m_pushButton(gpio18),
         m_isVideoOutputScreen(false), 
         m_isVideoOutputFile(false), 
@@ -1654,7 +1713,8 @@ public:
         m_isBugTrigger(false),
         m_bUdpServerRun(false),
         m_srcIp(0), m_srcPort(0),
-        m_bMulticastSenderRun(false) {
+        m_bMulticastSenderRun(false),
+        m_roll(0), m_pitch(0), m_yaw(0) {
     }
 
     ~F3xBase() {
@@ -1710,7 +1770,7 @@ public:
         }
     #endif
     }
-
+#if 0
     int OpenTty() { /* Try ttyUSB0 first then ttyTHS1 */
         const char *ttyUSB0 = "/dev/ttyUSB0";
         const char *ttyTHS1 = "/dev/ttyTHS1";
@@ -1733,11 +1793,41 @@ public:
 
         return m_ttyFd;
     }
+#else
+    int OpenTtyUSB0() {
+        const char *ttyUSB0 = "/dev/ttyUSB0";
+ 
+        m_ttyUSB0Fd = open(ttyUSB0, O_RDWR | O_NOCTTY | O_SYNC);
+        if(m_ttyUSB0Fd > 0) {
+            SetupTTY(m_ttyUSB0Fd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
+            printf("Open %s successful ...\n", ttyUSB0);
+        } else
+            printf("Error %d opening %s: %s\n", errno, ttyUSB0, strerror (errno));
 
-    int ReadTty(uint8_t *data, size_t size) {
+        m_triggerThread = thread(&F3xBase::TriggerTtyUSB0Task, this);
+
+        return m_ttyUSB0Fd;
+    }
+
+    int OpenTtyTHS1() {
+        const char *ttyTHS1 = "/dev/ttyTHS1";
+ 
+        m_ttyTHS1Fd = open (ttyTHS1, O_RDWR | O_NOCTTY | O_SYNC);
+        if(m_ttyTHS1Fd > 0) {
+            SetupTTY(m_ttyTHS1Fd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
+            printf("Open %s successful ...\n", ttyTHS1);
+        } else
+            printf("Error %d opening %s: %s\n", errno, ttyTHS1, strerror (errno));
+
+        m_jy901sThread = thread(&F3xBase::ReadTtyTHS1Task, this);
+
+        return m_ttyTHS1Fd;
+    }
+#endif
+    size_t ReadTty(int fd, uint8_t *data, size_t size) {
         fd_set rfds;
         FD_ZERO(&rfds);
-        FD_SET(m_ttyFd, &rfds);
+        FD_SET(fd, &rfds);
 
         struct timeval tv;
         tv.tv_sec = 0;
@@ -1745,19 +1835,18 @@ public:
 
         if(data == 0 || size == 0)
             return 0;
-        if(select(m_ttyFd+1, &rfds, NULL, NULL, &tv) > 0) {
-            int r = read(m_ttyFd, data, size); /* Receive trigger from f3f timer */
-            if(r == size)
-                return 1;
+        if(select(fd+1, &rfds, NULL, NULL, &tv) > 0) {
+            size_t r = read(fd, data, size);
+            return r;
         }
         return 0;
     }
 
-    void TriggerTty(bool newTrigger) {
+    void TriggerTtyUSB0(bool newTrigger) {
         static uint8_t serNo = 0x3f;
         uint8_t data;
 
-        if(!m_ttyFd)
+        if(!m_ttyUSB0Fd)
             return;
 
         if(newTrigger) { /* It's NEW trigger */
@@ -1767,25 +1856,34 @@ public:
 
         if(m_baseType == BASE_A) {
             data = (serNo & 0x3f);
-            printf("TriggerTty : BASE_A[%d]\r\n", serNo);
+            printf("TriggerTtyUSB0 : BASE_A[%d]\r\n", serNo);
         } else if(m_baseType == BASE_B) {
             data = (serNo & 0x3f) | 0x40;
-            printf("TriggerTty : BASE_B[%d]\r\n", serNo);
+            printf("TriggerTtyUSB0 : BASE_B[%d]\r\n", serNo);
         }        
 #if 0
-        write(m_ttyFd, &data, 1);
+        write(m_ttyUSB0Fd, &data, 1);
 #else
         m_triggerQueue.push(data);
 #endif
     }
 
-    void CloseTty() {
-        if(m_ttyFd)
-            close(m_ttyFd);
-        m_ttyFd = 0;
+    void CloseTtyUSB0() {
+        if(m_ttyUSB0Fd)
+            close(m_ttyUSB0Fd);
+        m_ttyUSB0Fd = 0;
 
         if(m_triggerThread.joinable())
             m_triggerThread.join();
+    }
+
+    void CloseTtyTHS1() {
+        if(m_ttyTHS1Fd)
+            close(m_ttyTHS1Fd);
+        m_ttyTHS1Fd = 0;
+
+        if(m_jy901sThread.joinable())
+            m_jy901sThread.join();
     }
 
     int OpenUdpSocket(uint16_t port) {
@@ -1796,6 +1894,11 @@ public:
         if(sockfd < 0) {
             printf("Error open UDP socket !!!\n");
             return 0;
+        }
+
+        int sock_opt = 1;
+        if(setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (void*)&sock_opt, sizeof(sock_opt)) < 0) {
+            printf("UDP setsockopt failed!\n");
         }
 
         memset((char*) &(addr),0, sizeof((addr)));
@@ -1820,11 +1923,9 @@ public:
             return 0;
         }
 
-        m_udpSocket = sockfd;
-
         printf("Open UDP socket successful ...\n");
 
-        return m_udpSocket;
+        return sockfd;
     }
 
     size_t ReadUdpSocket(uint8_t *data, size_t size, unsigned int timeoutMs) {
@@ -1960,7 +2061,18 @@ public:
     void UdpServerTask()
     {
         m_bUdpServerRun = true;
-        OpenUdpSocket(m_udpLocalPort);
+        
+        int socketfd = 0;
+        while(socketfd == 0) {
+            socketfd = OpenUdpSocket(m_udpLocalPort);
+            if(socketfd == 0) {
+                printf("Open UDP socket fail ...\n");
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            }
+        }
+
+        m_udpSocket = socketfd;
+
         while(m_bUdpServerRun) {
             if(bShutdown)
                 break;
@@ -2066,8 +2178,10 @@ public:
             return 0;
 
         char *ip = ipv4_address(ifname);
-        if(ip == 0)
+        if(ip == 0) 
             return 0;
+
+        printf("IP Address of %s : %s\n", ifname, ip);
 
         int sockfd;
 
@@ -2170,47 +2284,82 @@ public:
     }
 
     void MulticastSenderTask() {
+        int retryCount = 0;
         m_bMulticastSenderRun = true;
 
-        m_apMulticastSocket = OpenMulticastSocket("224.0.0.2", 9002, WLAN_AP);
-        m_staMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
+        int socketfd = 0;
+        while(socketfd == 0) {
+            socketfd = OpenMulticastSocket("224.0.0.2", 9002, WLAN_AP);
+            if(socketfd == 0) {
+                printf("Open %s multicast socket fail ...\n", WLAN_AP);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                retryCount++;
+            }
+            if(retryCount >= 10)
+                break;
+        }
+
+        m_apMulticastSocket = socketfd;
+
+        socketfd = 0;
+        retryCount = 0;
+
+        while(socketfd == 0) {
+            socketfd = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
+            if(socketfd == 0) {
+                printf("Open %s multicast socket fail ...\n", WLAN_STA);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            }
+            if(retryCount >= 10)
+                break;
+        }
+
+        m_staMulticastSocket = socketfd;
+
+        //m_apMulticastSocket = OpenMulticastSocket("224.0.0.2", 9002, WLAN_AP);
+        //m_staMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
 
         while(m_bMulticastSenderRun) {
             if(bShutdown)
                 break;
 
-            char *ip = ipv4_address(WLAN_AP);
-            if(ip && m_apMulticastSocket) {
-                string raw("BASE_X");
-                switch(m_baseType) {
-                    case BASE_A: raw = "BASE_A";
-                        break;
-                    case BASE_B: raw = "BASE_B";
-                        break;
-                    default:
-                        break;
+            char *ip = 0;
+            if(m_apMulticastSocket) {
+                ip = ipv4_address(WLAN_AP);
+                if(ip) {
+                    string raw("BASE_X");
+                    switch(m_baseType) {
+                        case BASE_A: raw = "BASE_A";
+                            break;
+                        case BASE_B: raw = "BASE_B";
+                            break;
+                        default:
+                            break;
+                    }
+                    raw.push_back(':');
+                    raw.append(ip);
+                    
+                    WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
                 }
-                raw.push_back(':');
-                raw.append(ip);
-                
-                WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
             }
 
-            ip = ipv4_address(WLAN_STA);
-            if(ip && m_staMulticastSocket) {
-                string raw("BASE_X");
-                switch(m_baseType) {
-                    case BASE_A: raw = "BASE_A";
-                        break;
-                    case BASE_B: raw = "BASE_B";
-                        break;
-                    default:
-                        break;
+            if(m_staMulticastSocket) {
+                ip = ipv4_address(WLAN_STA);
+                if(ip) {
+                    string raw("BASE_X");
+                    switch(m_baseType) {
+                        case BASE_A: raw = "BASE_A";
+                            break;
+                        case BASE_B: raw = "BASE_B";
+                            break;
+                        default:
+                            break;
+                    }
+                    raw.push_back(':');
+                    raw.append(ip);
+                    
+                    WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
                 }
-                raw.push_back(':');
-                raw.append(ip);
-                
-                WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
             }
 
             std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -2424,6 +2573,10 @@ public:
         return gv;
     }
 
+    int Roll() { return m_roll; }
+    int Pitch() { return m_pitch; }
+    int Yaw() { return m_yaw; }
+
     static void Start();
     static void Stop();
 };
@@ -2623,9 +2776,12 @@ int main(int argc, char**argv)
     cuda::printShortCudaDeviceInfo(cuda::getDevice());
     std::cout << cv::getBuildInformation() << std::endl;
 
+    //std::this_thread::sleep_for(std::chrono::seconds(10));
+
     f3xBase.LoadSystemConfig();
     f3xBase.SetupGPIO();
-    f3xBase.OpenTty();
+    f3xBase.OpenTtyUSB0();
+    f3xBase.OpenTtyTHS1();
     f3xBase.StartUdpServer();
     f3xBase.StartMulticastSender();
 
@@ -2760,9 +2916,9 @@ int main(int argc, char**argv)
                 if(f3xBase.IsNewTargetRestriction()) {
                     Rect nr = tracker.NewTargetRestriction();
                     rectangle( outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
-                    writeText( outFrame, "New Target Restriction Area", Point(0, 180));
+                    writeText( outFrame, "New Target Restriction Area", Point(40, 180));
                 }
-                writeText( outFrame, currentDateTime(), Point(240, 40));
+                writeText( outFrame, currentDateTime(), Point(40, 680));
                 line(outFrame, Point((CAMERA_WIDTH / 5), 0), Point((CAMERA_WIDTH / 5), CAMERA_HEIGHT), Scalar(127, 127, 0), 1);
             }
         }
@@ -2818,12 +2974,12 @@ int main(int argc, char**argv)
             }
 
             bool isNewTrigger = false;
-            if(duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count() > 500) { /* new trigger */
+            if(duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count() > 800) { /* new trigger */
                 isNewTrigger = true;
                 lastTriggerTime = steady_clock::now();
             }
 
-            f3xBase.TriggerTty(isNewTrigger);
+            f3xBase.TriggerTtyUSB0(isNewTrigger);
             f3xBase.TriggerSourceUdpSocket(isNewTrigger);
             f3xBase.TriggerMulticastSocket(isNewTrigger);
             f3xBase.RedLed(on);
@@ -2835,8 +2991,10 @@ int main(int argc, char**argv)
         if(f3xBase.IsVideoOutput()) {
             if(f3xBase.IsVideoOutputResult()) {
                 char str[32];
-                snprintf(str, 32, "FPS : %.2lf", fps);
-                writeText(outFrame, string(str), Point( 10, 40 ));
+                snprintf(str, 32, "FPS %.2lf", fps);
+                writeText(outFrame, string(str), Point( 40, 80 ));
+                snprintf(str, 32, "Yaw %d", f3xBase.Yaw());
+                writeText(outFrame, string(str), Point( 480, 80 ));
                 videoOutputQueue.push(outFrame.clone());
             } else
                 videoOutputQueue.push(capFrame.clone());
@@ -2866,8 +3024,8 @@ int main(int argc, char**argv)
         }
     }
 
-    f3xBase.CloseTty();
-    f3xBase.CloseUdpSocket();
+    f3xBase.CloseTtyUSB0();
+    f3xBase.CloseTtyTHS1();
 
     camera.Close();
 
