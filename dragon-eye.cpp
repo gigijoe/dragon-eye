@@ -140,9 +140,7 @@ static char *ipv4_address(const char *dev) {
                 printf("getnameinfo() failed: %s\n", gai_strerror(s));
                 return 0;
             }
-            //printf("\tInterface : <%s>\n", ifa->ifa_name );
-            //printf("\t  Address : <%s>\n", host);
-            printf("\tipv4 <%s> %s\n", ifa->ifa_name, host);
+            //printf("\tipv4 <%s> %s\n", ifa->ifa_name, host);
             found = true;
             break;
         }
@@ -1588,8 +1586,11 @@ private:
     unsigned int m_srcIp;
     unsigned short m_srcPort;
 
-    thread m_multicastSenderThread;
-    bool m_bMulticastSenderRun;
+    thread m_apMulticastSenderThread;
+    bool m_bApMulticastSenderRun;
+
+    thread m_staMulticastSenderThread;
+    bool m_bStaMulticastSenderRun;
 
     std::queue<uint8_t> m_triggerQueue;
     thread m_triggerThread;
@@ -1713,14 +1714,12 @@ public:
         m_isBugTrigger(false),
         m_bUdpServerRun(false),
         m_srcIp(0), m_srcPort(0),
-        m_bMulticastSenderRun(false),
+        m_bApMulticastSenderRun(false),
+        m_bStaMulticastSenderRun(false),
         m_roll(0), m_pitch(0), m_yaw(0) {
     }
 
-    ~F3xBase() {
-        if(m_udpServerThread.joinable())
-            m_udpServerThread.detach();
-    }
+    ~F3xBase() {}
 
     void SetupGPIO() {
         /* 
@@ -1987,10 +1986,7 @@ public:
         return 0;
     }
 #if 0
-    size_t WriteUdpSocket(const uint8_t *data, size_t size) {
-        if(!m_udpSocket)
-            return 0;
-
+    size_t WriteUdpSocket(int fd, const uint8_t *data, size_t size) {
         struct sockaddr_in to;
         int toLen = sizeof(to);
         memset(&to, 0, toLen);
@@ -2004,7 +2000,7 @@ public:
         
         //printf("Write to %s:%u ...\n", m_udpRemoteHost.c_str(), m_udpRemotePort);
         
-        int s = sendto(m_udpSocket, data, size, 0,(struct sockaddr*)&to, toLen);
+        int s = sendto(fd, data, size, 0,(struct sockaddr*)&to, toLen);
 
         return s;
     }
@@ -2170,18 +2166,16 @@ public:
     }
 
     int OpenMulticastSocket(const char *group, uint16_t port, const char *ifname) {
-        printf("Open multicast socket %s : group %s:%u\n", ifname, group, port);
+        char *ip = ipv4_address(ifname);
+        printf("OpenMulticastSocket : <%s> %s / %s:%u\n", ifname, ip, group, port);
 
         if(group == 0 || strlen(group) == 0)
             return 0;
         if(ifname == 0 || strlen(ifname) == 0)
             return 0;
 
-        char *ip = ipv4_address(ifname);
         if(ip == 0) 
             return 0;
-
-        printf("IP Address of %s : %s\n", ifname, ip);
 
         int sockfd;
 
@@ -2242,10 +2236,13 @@ public:
         memset(&ifr, 0, sizeof(ifr));
         ifr.ifr_addr.sa_family = AF_INET;
         strcpy(ifr.ifr_ifrn.ifrn_name, ifname);
+
+        char *ip = ipv4_address(ifname);
+        printf("WriteMulticastSocket : <%s> %s / %s:%u\n", ifname, ip, group, port);
         if(ioctl(sockfd, SIOCGIFFLAGS, &ifr) >= 0 &&
             (ifr.ifr_flags &IFF_UP)) {
             if(setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname)) == -1) {
-                printf("setsocketopt %s SO_BINDTODEVICE fail !!!\n", ifname);
+                printf("WriteMulticastSocket : setsocketopt %s SO_BINDTODEVICE fail !!!\n", ifname);
             } else {
                 int r = sendto(sockfd, data, size, 0,(struct sockaddr*)&addr, sizeof(addr));
                 if(r < 0)
@@ -2253,7 +2250,8 @@ public:
                 else
                     ret = r;
             }
-        }
+        } else
+            perror(ifname);
     }
 
     void TriggerMulticastSocket(bool newTrigger) {
@@ -2283,43 +2281,16 @@ public:
             WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
     }
 
-    void MulticastSenderTask() {
-        int retryCount = 0;
-        m_bMulticastSenderRun = true;
+    void ApMulticastSenderTask() {
+        m_bApMulticastSenderRun = true;
 
-        int socketfd = 0;
-        while(socketfd == 0) {
-            socketfd = OpenMulticastSocket("224.0.0.2", 9002, WLAN_AP);
-            if(socketfd == 0) {
-                printf("Open %s multicast socket fail ...\n", WLAN_AP);
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-                retryCount++;
-            }
-            if(retryCount >= 10)
-                break;
+        while(m_apMulticastSocket == 0) {
+            m_apMulticastSocket = OpenMulticastSocket("224.0.0.2", 9002, WLAN_AP);
+            if(m_apMulticastSocket == 0) 
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));            
         }
 
-        m_apMulticastSocket = socketfd;
-
-        socketfd = 0;
-        retryCount = 0;
-
-        while(socketfd == 0) {
-            socketfd = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
-            if(socketfd == 0) {
-                printf("Open %s multicast socket fail ...\n", WLAN_STA);
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-            }
-            if(retryCount >= 10)
-                break;
-        }
-
-        m_staMulticastSocket = socketfd;
-
-        //m_apMulticastSocket = OpenMulticastSocket("224.0.0.2", 9002, WLAN_AP);
-        //m_staMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
-
-        while(m_bMulticastSenderRun) {
+        while(m_bApMulticastSenderRun) {
             if(bShutdown)
                 break;
 
@@ -2338,13 +2309,48 @@ public:
                     }
                     raw.push_back(':');
                     raw.append(ip);
-                    
+
                     WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
+                } else {
+                    /* As AP we should NOT be here ... */
                 }
             }
 
+            std::this_thread::sleep_for(std::chrono::seconds(2));
+        }
+        
+        if(m_apMulticastSocket) {
+            close(m_apMulticastSocket);
+            m_apMulticastSocket = 0;
+        }
+    }
+
+    void StartApMulticastSender() {
+        m_apMulticastSenderThread = thread(&F3xBase::ApMulticastSenderTask, this);
+    }
+
+    void StopApMulticastSender() {
+        if(m_apMulticastSenderThread.joinable()) {
+            m_bApMulticastSenderRun = false;
+            m_apMulticastSenderThread.join();
+        }
+    }
+
+    void StaMulticastSenderTask() {
+        m_bStaMulticastSenderRun = true;
+
+        while(m_staMulticastSocket == 0) {
+            m_staMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
+            if(m_staMulticastSocket == 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        }
+
+        while(m_bStaMulticastSenderRun) {
+            if(bShutdown)
+                break;
+
             if(m_staMulticastSocket) {
-                ip = ipv4_address(WLAN_STA);
+                char *ip = ipv4_address(WLAN_STA);
                 if(ip) {
                     string raw("BASE_X");
                     switch(m_baseType) {
@@ -2359,30 +2365,35 @@ public:
                     raw.append(ip);
                     
                     WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
+                } else {
+                    close(m_staMulticastSocket);
+                    m_staMulticastSocket = 0;
+                }
+            } else { /* Wifi disconnected ... */
+                m_staMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
+                if(m_staMulticastSocket == 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                    continue;              
                 }
             }
 
             std::this_thread::sleep_for(std::chrono::seconds(2));
         }
         
-        if(m_apMulticastSocket) {
-            close(m_apMulticastSocket);
-            m_apMulticastSocket = 0;
-        }
         if(m_staMulticastSocket) {
             close(m_staMulticastSocket);
             m_staMulticastSocket = 0;
         }
     }
 
-    void StartMulticastSender() {
-        m_multicastSenderThread = thread(&F3xBase::MulticastSenderTask, this);
+    void StartStaMulticastSender() {
+        m_staMulticastSenderThread = thread(&F3xBase::StaMulticastSenderTask, this);
     }
 
-    void StopMulticastSender() {
-        if(m_multicastSenderThread.joinable()) {
-            m_bMulticastSenderRun = false;
-            m_multicastSenderThread.join();
+    void StopStaMulticastSender() {
+        if(m_staMulticastSenderThread.joinable()) {
+            m_bStaMulticastSenderRun = false;
+            m_staMulticastSenderThread.join();
         }
     }
 
@@ -2783,7 +2794,8 @@ int main(int argc, char**argv)
     f3xBase.OpenTtyUSB0();
     f3xBase.OpenTtyTHS1();
     f3xBase.StartUdpServer();
-    f3xBase.StartMulticastSender();
+    f3xBase.StartStaMulticastSender();
+    f3xBase.StartApMulticastSender();
 
     camera.LoadConfig();
     camera.UpdateExposure();
@@ -3023,6 +3035,9 @@ int main(int argc, char**argv)
             videoOutputThread.join();
         }
     }
+
+    f3xBase.StopStaMulticastSender();
+    f3xBase.StopApMulticastSender();
 
     f3xBase.CloseTtyUSB0();
     f3xBase.CloseTtyTHS1();
