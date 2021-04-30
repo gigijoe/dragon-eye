@@ -71,19 +71,19 @@ using std::chrono::seconds;
 //#define CAMERA_1080P
 
 #ifdef CAMERA_1080P
-    #define CAMERA_WIDTH 1920
-    #define CAMERA_HEIGHT 1080
+    #define CAMERA_WIDTH 1080
+    #define CAMERA_HEIGHT 1920
     #define CAMERA_FPS 30
     #define MIN_TARGET_WIDTH 12
     #define MIN_TARGET_HEIGHT 12
     #define MAX_TARGET_WIDTH 480
     #define MAX_TARGET_HEIGHT 480
 #else
-    #define CAMERA_WIDTH 1280
-    #define CAMERA_HEIGHT 720
+    #define CAMERA_WIDTH 720
+    #define CAMERA_HEIGHT 1280
     #define CAMERA_FPS 30
-    #define MIN_TARGET_WIDTH 8
-    #define MIN_TARGET_HEIGHT 6
+    #define MIN_TARGET_WIDTH 6
+    #define MIN_TARGET_HEIGHT 8
     #define MAX_TARGET_WIDTH 320
     #define MAX_TARGET_HEIGHT 320
 #endif
@@ -221,7 +221,7 @@ inline void writeText( Mat & mat, const string text, const Point textOrg)
 {
    //int fontFace = FONT_HERSHEY_SIMPLEX; 
    int fontFace = FONT_HERSHEY_DUPLEX;
-   double fontScale = 2;
+   double fontScale = 1;
    int thickness = 2;  
    //Point textOrg( 10, 40 );
    putText( mat, text, textOrg, fontFace, fontScale, Scalar(0, 0, 0), thickness, cv::LINE_8 );
@@ -606,7 +606,7 @@ public:
         m_newTargetRestrictionRect = r;
     }
 
-    Rect NewTargetRestriction() const {   return m_newTargetRestrictionRect; }
+    Rect NewTargetRestrictionRect() const {   return m_newTargetRestrictionRect; }
 
     void Update(list< Rect > & roiRect, bool enableFakeTargetDetection = false) {
         ++m_lastFrameTick;
@@ -775,14 +775,14 @@ public:
             uint32_t overlap_count = 0;
             for(auto & l : m_newTargetsHistory) {
                 for(auto & r : l) {
-                    if(rr->x >= (m_width / 5))
+                    if(rr->y < (m_height / 5) * 4)
                         continue;
                     if((r & *rr).area() > 0) { /* new target overlap previous new target */
                         ++overlap_count;
                     }
                 }
             }
-            if(rr->x < (m_width / 5)) {
+            if(rr->y >= (m_height / 5) * 4) {
                 if(overlap_count > 0) {
                     rr->x -= rr->width;
                     rr->y -= rr->height;
@@ -1051,7 +1051,8 @@ int gst_rtsp_server_task()
     gst_rtsp_media_factory_set_launch (factory,
 //          "( appsrc name=mysrc is-live=true ! videoconvert ! omxh265enc ! rtph265pay mtu=1400 name=pay0 pt=96 )");
         "appsrc name=mysrc is-live=true ! videoconvert ! \
-nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=1000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
+omxh265enc control-rate=2 bitrate=1000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
+//nvvidconv flip-method=0 ! omxh265enc control-rate=2 bitrate=1000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 
     gst_rtsp_media_factory_set_shared (factory, TRUE);
     /* notify when our media is ready, This is called whenever someone asks for
@@ -1111,7 +1112,8 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
         /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
+omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
+//nvvidconv flip-method=0 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
             30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #if 0 /* Always start from index 0 */
         /* 90 secs duration, maximum 100 files */
@@ -1141,7 +1143,7 @@ udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
     if(isVideoOutputScreen) {
         snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv ! video/x-raw(memory:NVMM) ! \
+nvvidconv flip-method=3 ! video/x-raw(memory:NVMM) ! \
 nvoverlaysink sync=false ", 30);
         outScreen.open(gstStr, VideoWriter::fourcc('I', '4', '2', '0'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
         cout << endl;
@@ -1161,7 +1163,7 @@ h265parse ! rtph265pay mtu=1400 ! udpsink host=224.1.1.1 port=%u auto-multicast=
 #else
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
+omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
 h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=%u sync=false async=false ",
             30, rtpRemoteHost, rtpRemotePort);
 #endif
@@ -1175,7 +1177,7 @@ h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=
     if(isVideoOutputHLS) {
         snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh264enc control-rate=2 bitrate=4000000 ! h264parse ! mpegtsmux ! \
+omxh264enc control-rate=2 bitrate=4000000 ! h264parse ! mpegtsmux ! \
 hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts target-duration=1 max-files=10 ", 30);
         outHLS.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
         cout << endl;
@@ -1217,7 +1219,7 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 
                     snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
+omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
                         30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 
                     outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
@@ -1367,9 +1369,9 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 #else
         snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%f ee-mode=%d ee-strength=%f gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%f ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
+nvvidconv flip-method=3 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
             sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
-            CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+            CAMERA_HEIGHT, CAMERA_WIDTH, CAMERA_FPS);
 #endif
 /*
         snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video1 ! \
@@ -1650,21 +1652,28 @@ private:
 
     void ReadTtyTHS1Task() {
         while(m_ttyTHS1Fd) {
+#if 1            
             uint8_t header[1] = { 0x00 };
             size_t r = ReadTty(m_ttyTHS1Fd, header, 1);
-            if(r != 1)
+            if(r != 1) {
+                //std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
+            }
             if(header[0] == 0x55) {
                 uint8_t command[1] = { 0x00 };
                 r = ReadTty(m_ttyTHS1Fd, command, 1);
-                if(r != 1)
+                if(r != 1) {
+                    //std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
+                }
                 if(command[0] >= 0x50 && command[0] <= 0x5a) {
                     if(command[0] == 0x53) { /* Angle output */
                         uint8_t data[9];
                         r = ReadTty(m_ttyTHS1Fd, data, 9);
-                        if(r != 9)
+                        if(r != 9) {
+                            //std::this_thread::sleep_for(std::chrono::milliseconds(10));
                             continue;
+                        }
                         uint8_t sum = header[0] + command[0];
                         for(int i=0;i<8;i++) {
                             sum += data[i];
@@ -1675,15 +1684,15 @@ private:
                             m_roll = ((data[1] << 8) | data[0]) * 180 / 32768;
                             m_pitch = ((data[3] << 8) | data[2]) * 180 / 32768;
                             m_yaw = ((data[5] << 8) | data[4]) * 180 / 32768;
-                            printf("Raw %d, Pitch %d, Yaw %d\n", m_roll, m_pitch, m_yaw);
+                            printf("Roll %d, Pitch %d, Yaw %d\n", m_roll, m_pitch, m_yaw);
                         }
                     }
-                } else
+                } else {
+                    //std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
+                }
             }
-
-
-#if 0
+#else
             uint8_t data[16];
             size_t r = ReadTty(m_ttyTHS1Fd, data, 16);
             if(r > 0) {
@@ -1803,7 +1812,8 @@ public:
         } else
             printf("Error %d opening %s: %s\n", errno, ttyUSB0, strerror (errno));
 
-        m_triggerThread = thread(&F3xBase::TriggerTtyUSB0Task, this);
+        if(m_ttyUSB0Fd > 0)
+            m_triggerThread = thread(&F3xBase::TriggerTtyUSB0Task, this);
 
         return m_ttyUSB0Fd;
     }
@@ -1818,22 +1828,24 @@ public:
         } else
             printf("Error %d opening %s: %s\n", errno, ttyTHS1, strerror (errno));
 
-        m_jy901sThread = thread(&F3xBase::ReadTtyTHS1Task, this);
+        if(m_ttyTHS1Fd > 0)
+            m_jy901sThread = thread(&F3xBase::ReadTtyTHS1Task, this);
 
         return m_ttyTHS1Fd;
     }
 #endif
     size_t ReadTty(int fd, uint8_t *data, size_t size) {
+        if(data == 0 || size == 0)
+            return 0;
+
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(fd, &rfds);
 
         struct timeval tv;
         tv.tv_sec = 0;
-        tv.tv_usec = 0;
+        tv.tv_usec = 100000; /* 10ms */
 
-        if(data == 0 || size == 0)
-            return 0;
         if(select(fd+1, &rfds, NULL, NULL, &tv) > 0) {
             size_t r = read(fd, data, size);
             return r;
@@ -2063,7 +2075,7 @@ public:
             socketfd = OpenUdpSocket(m_udpLocalPort);
             if(socketfd == 0) {
                 printf("Open UDP socket fail ...\n");
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                std::this_thread::sleep_for(std::chrono::seconds(1));
             }
         }
 
@@ -2287,7 +2299,7 @@ public:
         while(m_apMulticastSocket == 0) {
             m_apMulticastSocket = OpenMulticastSocket("224.0.0.2", 9002, WLAN_AP);
             if(m_apMulticastSocket == 0) 
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));            
+                std::this_thread::sleep_for(std::chrono::seconds(1));            
         }
 
         while(m_bApMulticastSenderRun) {
@@ -2342,7 +2354,7 @@ public:
         while(m_staMulticastSocket == 0) {
             m_staMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
             if(m_staMulticastSocket == 0)
-                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                std::this_thread::sleep_for(std::chrono::seconds(1));
         }
 
         while(m_bStaMulticastSenderRun) {
@@ -2372,7 +2384,7 @@ public:
             } else { /* Wifi disconnected ... */
                 m_staMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
                 if(m_staMulticastSocket == 0) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
                     continue;              
                 }
             }
@@ -2612,22 +2624,18 @@ static thread videoOutputThread;
 void F3xBase::Start()
 {
     if(f3xBase.IsNewTargetRestriction())
-        //tracker.NewTargetRestriction(Rect(cy - 200, cx - 200, 400, 200));
-        tracker.NewTargetRestriction(Rect(0, 180, 180, 360));
+        tracker.NewTargetRestriction(Rect(180, CAMERA_HEIGHT - 180, 360, 180));
     else
         tracker.NewTargetRestriction(Rect());
-#if 0
-    bsModel->setVarThreshold(fb.Mog2Threshold());
-#else
+
     /* background history count, varThreshold, shadow detection */
-    //Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
-    bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
+    bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false);
     //cout << bsModel->getVarInit() << " / " << bsModel->getVarMax() << " / " << bsModel->getVarMax() << endl;
     /* Default variance of each gaussian component 15 / 75 / 75 */ 
     bsModel->setVarInit(15);
     bsModel->setVarMax(20);
     bsModel->setVarMin(4);    
-#endif
+
     camera.UpdateExposure();
 
     cout << endl;
@@ -2643,7 +2651,7 @@ void F3xBase::Start()
         F3xBase & fb = f3xBase;
         videoOutputThread = thread(&VideoOutputTask, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), 
             fb.IsVideoOutputRTP(), fb.RtpRemoteHost(), fb.RtpRemotePort(), 
-            fb.IsVideoOutputHLS(), fb.IsVideoOutputRTSP(),CAMERA_WIDTH, CAMERA_HEIGHT);
+            fb.IsVideoOutputHLS(), fb.IsVideoOutputRTSP(), CAMERA_WIDTH, CAMERA_HEIGHT);
     }
 
     f3xBase.GreenLed(off);
@@ -2787,8 +2795,6 @@ int main(int argc, char**argv)
     cuda::printShortCudaDeviceInfo(cuda::getDevice());
     std::cout << cv::getBuildInformation() << std::endl;
 
-    //std::this_thread::sleep_for(std::chrono::seconds(10));
-
     f3xBase.LoadSystemConfig();
     f3xBase.SetupGPIO();
     f3xBase.OpenTtyUSB0();
@@ -2800,8 +2806,8 @@ int main(int argc, char**argv)
     camera.LoadConfig();
     camera.UpdateExposure();
 
-    int cx = CAMERA_WIDTH - 1;
-    int cy = (CAMERA_HEIGHT / 2) - 1;
+    int cy = CAMERA_HEIGHT - 1;
+    int cx = (CAMERA_WIDTH / 2) - 1;
 #if 0
     erodeFilter = cuda::createMorphologyFilter(MORPH_ERODE, CV_8UC1, elementErode);
     dilateFilter = cuda::createMorphologyFilter(MORPH_DILATE, CV_8UC1, elementDilate);
@@ -2815,16 +2821,6 @@ int main(int argc, char**argv)
     elementDilate = cv::getStructuringElement(cv::MORPH_RECT,
                     cv::Size(2 * dilate_size + 1, 2 * dilate_size + 1), 
                     cv::Point(-1, -1) ); /* Default anchor point */
-#endif
-#if 0
-    /* background history count, varThreshold, shadow detection */
-    //Ptr<cuda::BackgroundSubtractorMOG2> bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
-    bsModel = cuda::createBackgroundSubtractorMOG2(30, f3xBase.Mog2Threshold(), false); /* To anit grass wave ... */ 
-    //cout << bsModel->getVarInit() << " / " << bsModel->getVarMax() << " / " << bsModel->getVarMax() << endl;
-    /* Default variance of each gaussian component 15 / 75 / 75 */ 
-    bsModel->setVarInit(15);
-    bsModel->setVarMax(20);
-    bsModel->setVarMin(4);
 #endif
     cout << endl;
     cout << "### Press button to start object tracking !!!" << endl;
@@ -2903,7 +2899,7 @@ int main(int argc, char**argv)
         if(f3xBase.IsVideoOutputResult()) {
             if(f3xBase.IsVideoOutput()) {
                 capFrame.copyTo(outFrame);
-                line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 255, 0), 1);
+                line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 255, 0), 1);
             }
         }
 
@@ -2926,12 +2922,12 @@ int main(int argc, char**argv)
                 for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();++rr)
                     rectangle( outFrame, rr->tl(), rr->br(), Scalar(0, 255, 0), 2, 8, 0 );
                 if(f3xBase.IsNewTargetRestriction()) {
-                    Rect nr = tracker.NewTargetRestriction();
+                    Rect nr = tracker.NewTargetRestrictionRect();
                     rectangle( outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
-                    writeText( outFrame, "New Target Restriction Area", Point(40, 180));
+                    writeText( outFrame, "New Target Restriction Area", Point(120, CAMERA_HEIGHT - 180));
                 }
-                writeText( outFrame, currentDateTime(), Point(40, 680));
-                line(outFrame, Point((CAMERA_WIDTH / 5), 0), Point((CAMERA_WIDTH / 5), CAMERA_HEIGHT), Scalar(127, 127, 0), 1);
+                writeText( outFrame, currentDateTime(), Point(80, 40));
+                line(outFrame, Point(0, (CAMERA_HEIGHT / 5) * 4), Point(CAMERA_WIDTH, (CAMERA_HEIGHT / 5) * 4), Scalar(127, 127, 0), 1);
             }
         }
 
@@ -2968,10 +2964,10 @@ int main(int argc, char**argv)
             if(t->ArcLength() > MIN_COURSE_LENGTH && 
                 t->AbsLength() > MIN_COURSE_LENGTH && 
                 t->TrackedCount() > MIN_TARGET_TRACKED_COUNT) {
-                if((t->BeginCenterPoint().y > cy && t->EndCenterPoint().y <= cy) ||
-                        (t->BeginCenterPoint().y < cy && t->EndCenterPoint().y >= cy)||
-                        (t->PreviousCenterPoint().y > cy && t->CurrentCenterPoint().y <= cy) ||
-                        (t->PreviousCenterPoint().y < cy && t->CurrentCenterPoint().y >= cy)) {
+                if((t->BeginCenterPoint().x > cx && t->EndCenterPoint().x <= cx) ||
+                        (t->BeginCenterPoint().x < cx && t->EndCenterPoint().x >= cx) ||
+                        (t->PreviousCenterPoint().x > cx && t->CurrentCenterPoint().x <= cx) ||
+                        (t->PreviousCenterPoint().x < cx && t->CurrentCenterPoint().x >= cx)) {
                     bool tgr = t->Trigger(f3xBase.IsBugTrigger());
                     if(doTrigger == false)
                         doTrigger = tgr;
@@ -2982,7 +2978,7 @@ int main(int argc, char**argv)
         if(doTrigger) { /* t->TriggerCount() > 0 */
             if(f3xBase.IsVideoOutputResult()) {
                 if(f3xBase.IsVideoOutput())
-                    line(outFrame, Point(0, cy), Point(cx, cy), Scalar(0, 0, 255), 3);
+                    line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
             }
 
             bool isNewTrigger = false;
