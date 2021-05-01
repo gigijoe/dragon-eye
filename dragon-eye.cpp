@@ -859,8 +859,10 @@ void FrameQueue::cancel()
 
 void FrameQueue::push(cv::Mat const & image)
 {
-    while(matQueue.size() >= 3) /* Prevent memory overflow ... */
+    while(matQueue.size() >= 3) { /* Prevent memory overflow ... */
+        printf("Video Frame droped !!!\n");
         return; /* Drop frame */
+    }
 
     std::unique_lock<std::mutex> mlock(matMutex);
     matQueue.push(image);
@@ -881,7 +883,10 @@ void FrameQueue::pop()
         }
     }
 
-    if(--refCnt == 0)
+    if(refCnt > 0)
+        --refCnt;
+
+    if(refCnt == 0)
         matQueue.pop();
 }
 
@@ -3027,10 +3032,8 @@ int main(int argc, char**argv)
     f3xBase.Relay(off);
 
     if(f3xBase.IsVideoOutput()) {
-        if(bStopped == false) {
-            videoOutputQueue.cancel();
-            videoOutputThread.join();
-        }
+        videoOutputQueue.cancel();
+        videoOutputThread.join();
     }
 
     f3xBase.StopStaMulticastSender();
