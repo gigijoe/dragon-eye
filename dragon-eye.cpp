@@ -95,6 +95,7 @@ using std::chrono::seconds;
 #define MIN_COURSE_LENGTH            30     /* Minimum course length of RF trigger after detection of cross line */
 #define MIN_TARGET_TRACKED_COUNT     3      /* Minimum target tracked count of RF trigger after detection of cross line */
 
+#define VIDEO_OUTPUT_FPS             30
 #define VIDEO_OUTPUT_DIR             "/opt/Videos"
 #define VIDEO_OUTPUT_FILE_NAME       "base"
 #define VIDEO_FILE_OUTPUT_DURATION   90     /* Video file duration 90 secends */
@@ -963,7 +964,7 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 
     /* increment the timestamp every 1/FPS second */
     GST_BUFFER_PTS (buffer) = ctx->timestamp;
-    GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, 30);
+    GST_BUFFER_DURATION (buffer) = gst_util_uint64_scale_int (1, GST_SECOND, VIDEO_OUTPUT_FPS);
     ctx->timestamp += GST_BUFFER_DURATION (buffer);
 
     g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
@@ -994,7 +995,7 @@ media_configure (GstRTSPMediaFactory * factory, GstRTSPMedia * media, gpointer u
                 "format", G_TYPE_STRING, "BGRx",
                 "width", G_TYPE_INT, CAMERA_WIDTH,
                 "height", G_TYPE_INT, CAMERA_HEIGHT,
-                "framerate", GST_TYPE_FRACTION, 30, 1, NULL), NULL);
+                "framerate", GST_TYPE_FRACTION, VIDEO_OUTPUT_FPS, 1, NULL), NULL);
 
     ctx = g_new0 (RtspServerContext, 1);
     ctx->timestamp = 0;
@@ -1119,14 +1120,14 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
 //nvvidconv flip-method=0 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
-            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+            VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #if 0 /* Always start from index 0 */
         /* 90 secs duration, maximum 100 files */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
                    videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
                    nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! \
                    splitmuxsink muxer=matroskamux sink=filesink location=%s/%s%c%%03d.mkv max-size-time=90000000000 max-files=100 async-finalize=true async-handling=true ", 
-            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B');
+            VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B');
 #endif
 #if 0 /* NOT work, due to tee */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
@@ -1136,7 +1137,7 @@ tee name=t \
 t. ! queue ! matroskamux ! filesink location=%s/%s%c%03d.mkv  \
 t. ! queue ! video/x-h265, stream-format=byte-stream ! h265parse ! rtph265pay mtu=1400 ! \
 udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
-            30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+            VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #endif
         outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
         cout << endl;
@@ -1149,7 +1150,7 @@ udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
         snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=3 ! video/x-raw(memory:NVMM) ! \
-nvoverlaysink sync=false ", 30);
+nvoverlaysink sync=false ", VIDEO_OUTPUT_FPS);
         outScreen.open(gstStr, VideoWriter::fourcc('I', '4', '2', '0'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
         cout << endl;
         cout << gstStr << endl;
@@ -1164,15 +1165,15 @@ nvoverlaysink sync=false ", 30);
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
 h265parse ! rtph265pay mtu=1400 ! udpsink host=224.1.1.1 port=%u auto-multicast=true sync=false async=false ",
-            30, rtpRemotePort);
+            VIDEO_OUTPUT_FPS, rtpRemotePort);
 #else
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
 h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=%u sync=false async=false ",
-            30, rtpRemoteHost, rtpRemotePort);
+            VIDEO_OUTPUT_FPS, rtpRemoteHost, rtpRemotePort);
 #endif
-        outRTP.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
+        outRTP.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), VIDEO_OUTPUT_FPS, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
         cout << endl;
         cout << gstStr << endl;
         cout << endl;
@@ -1183,8 +1184,8 @@ h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=
         snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh264enc control-rate=2 bitrate=4000000 ! h264parse ! mpegtsmux ! \
-hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts target-duration=1 max-files=10 ", 30);
-        outHLS.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
+hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts target-duration=1 max-files=10 ", VIDEO_OUTPUT_FPS);
+        outHLS.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), VIDEO_OUTPUT_FPS, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
         cout << endl;
         cout << gstStr << endl;
         cout << endl;
@@ -1225,9 +1226,9 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
                     snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
-                        30, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+                        VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 
-                    outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), 30, videoSize);
+                    outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), VIDEO_OUTPUT_FPS, videoSize);
                     cout << endl;
                     cout << gstStr << endl;
                     cout << endl;
@@ -2831,7 +2832,8 @@ int main(int argc, char**argv)
     cout << endl;
     cout << "### Press button to start object tracking !!!" << endl;
 
-    double fps = 0;
+    double fps = CAMERA_FPS;
+    double dt_us = 1000000.0 / CAMERA_FPS;
     steady_clock::time_point t1(steady_clock::now());
     uint64_t loopCount = 0;
 
@@ -3014,16 +3016,15 @@ int main(int argc, char**argv)
                 videoOutputQueue.push(capFrame.clone());
         }
 
-        if(loopCount > 0 && loopCount % 30 == 0) {
-            steady_clock::time_point t2(steady_clock::now());
-            double dt_us(static_cast<double>(duration_cast<microseconds>(t2 - t1).count()));
+        steady_clock::time_point t2(steady_clock::now());
+        dt_us = (dt_us + static_cast<double>(duration_cast<microseconds>(t2 - t1).count())) / 2;
 
-            fps = 30 * (1000000.0 / dt_us);
+        /* t2 - t1 = interval of loop */
+        /* t2 - t3 = detection process time */
+        if(loopCount > 0 && loopCount % VIDEO_OUTPUT_FPS == 0) /* Display fps every second */
+            std::cout << "FPS : " << fixed  << setprecision(2) <<  (1000000.0 / dt_us) << " / " << duration_cast<milliseconds>(t2 - t3).count() << " ms" << std::endl;
 
-            std::cout << "FPS : " << fixed  << setprecision(2) <<  fps << " / " << duration_cast<milliseconds>(t2 - t3).count() << " ms" << std::endl;
-
-            t1 = steady_clock::now();
-        }
+        t1 = steady_clock::now();
     }
 
     f3xBase.GreenLed(off); /* Flash during frames */
