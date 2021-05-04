@@ -1860,6 +1860,10 @@ public:
         return 0;
     }
 
+    size_t WriteTty(int fd, const uint8_t *data, size_t size) {
+        return write(fd, data, size);
+    }
+
     void TriggerTtyUSB0(bool newTrigger) {
         static uint8_t serNo = 0x3f;
         uint8_t data;
@@ -2105,6 +2109,8 @@ public:
                 const char ack[] = "#Ack";
                 const char started[] = "#Started";
                 const char stopped[] = "#Stopped";
+                const char compass_lock[] = "#CompassLock";
+                const char compass_unlock[] = "#CompassUnlock";
 
                 if(line == "#SystemSettings") {
                     if(ParseConfigStream(iss, cfg) > 0) {
@@ -2167,6 +2173,21 @@ public:
                         WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
                     else
                         WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
+                } else if(line == "#CompassLock") {
+                    const uint8_t cmd[] = {0xff, 0xaa, 0x69, 0x88, 0xb5}; /* Enter command mode */
+                    WriteTty(m_ttyTHS1Fd, cmd, 5);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    const uint8_t cal[] = {0xff, 0xaa, 0x01, 0x07, 0x00}; /* Magntic calibration mode */
+                    WriteTty(m_ttyTHS1Fd, cal, 5);
+                    
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_lock), strlen(compass_lock));
+                } else if(line == "#CompassUnlock") {
+                    const uint8_t cal[] = {0xff, 0xaa, 0x01, 0x00, 0x00}; /* Exit calibration */
+                    WriteTty(m_ttyTHS1Fd, cal, 5);
+                    const uint8_t cmd[] = {0xff, 0xaa, 0x00, 0x00, 0x00}; /* Save current settings */
+                    WriteTty(m_ttyTHS1Fd, cmd, 5);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_unlock), strlen(compass_unlock));
                 }
             }
         }
@@ -2328,6 +2349,25 @@ public:
                     }
                     raw.push_back(':');
                     raw.append(ip);
+
+                    ifstream in;
+                    in.open("/sys/devices/virtual/thermal/thermal_zone0/temp"); // AO-therm
+                    if(in.is_open()) {
+                        raw.push_back(':');
+                        string s;
+                        in >> s;
+                        raw.append(s);
+                        in.close();
+                    }
+
+                    in.open("/sys/devices/gpu.0/load"); // GPU load
+                    if(in.is_open()) {
+                        raw.push_back(':');
+                        string s;
+                        in >> s;
+                        raw.append(s);
+                        in.close();
+                    }
 
                     WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
                 } else {
