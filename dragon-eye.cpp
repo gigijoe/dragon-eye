@@ -110,14 +110,25 @@ typedef enum { BASE_UNKNOWN, BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseT
 *
 */
 
+static bool IsValidateIpAddress(const string & ipAddress)
+{
+    struct sockaddr_in sa;
+    int result = inet_pton(AF_INET, ipAddress.c_str(), &(sa.sin_addr));
+    return result != 0;
+}
+
 static bool bShutdown = false;
 static bool bStopped = true;
 
 typedef enum { EvtStop, EvtStart } EvtType_t;
 static queue<EvtType_t> evtQueue;
 
-static char *ipv4_address(const char *dev) {
-    static char host[NI_MAXHOST];
+static std::mutex ipMutex;
+
+static const char *ipv4_address(const char *dev, string & result) {
+    std::unique_lock<std::mutex> mlock(ipMutex);
+
+    char host[NI_MAXHOST];
     struct ifaddrs *ifaddr, *ifa;
     int family, s;
 
@@ -129,14 +140,19 @@ static char *ipv4_address(const char *dev) {
         return 0;
     }
 
+    memset(host, 0, NI_MAXHOST);
+
     bool found = false;
     for(ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
         if(ifa->ifa_addr == NULL)
             continue;  
 
+        if(ifa->ifa_addr->sa_family != AF_INET)
+            continue;
+
         s = getnameinfo(ifa->ifa_addr, sizeof(struct sockaddr_in), host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
 
-        if((strcmp(ifa->ifa_name, dev) == 0) && (ifa->ifa_addr->sa_family == AF_INET)) {
+        if((strcmp(ifa->ifa_name, dev) == 0)) {
             if (s != 0) {
                 printf("getnameinfo() failed: %s\n", gai_strerror(s));
                 return 0;
@@ -151,7 +167,15 @@ static char *ipv4_address(const char *dev) {
     if(found == false)
         return 0;
 
-    return host;
+    if(strlen(host) < 7) /* X.X.X.X */
+        return 0;
+
+    if(IsValidateIpAddress(host) == false)
+        return 0;
+
+    result = host;
+
+    return result.c_str();
 }
 
 static int add_route(const char *_target, const char *_netmask, const char *_dev) {
@@ -1286,13 +1310,6 @@ omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%
 *
 */
 
-static bool IsValidateIpAddress(const string & ipAddress)
-{
-    struct sockaddr_in sa;
-    int result = inet_pton(AF_INET, ipAddress.c_str(), &(sa.sin_addr));
-    return result != 0;
-}
-
 static void ParseConfigString(string & line, vector<pair<string, string> > & cfg)
 {
     auto delimiterPos = line.find("=");
@@ -2206,14 +2223,14 @@ public:
     }
 
     int OpenMulticastSocket(const char *group, uint16_t port, const char *ifname) {
-        char *ip = ipv4_address(ifname);
-        printf("OpenMulticastSocket : <%s> %s / %s:%u\n", ifname, ip, group, port);
+        string result;
+        const char *ip = ipv4_address(ifname, result);
+        printf("OpenMulticastSocket : <%s> %s / %s:%u\n", ifname, result.c_str(), group, port);
 
         if(group == 0 || strlen(group) == 0)
             return 0;
         if(ifname == 0 || strlen(ifname) == 0)
             return 0;
-
         if(ip == 0) 
             return 0;
 
@@ -2250,7 +2267,7 @@ public:
         // use setsockopt() to request that the kernel join a multicast group
         mreq.imr_multiaddr.s_addr = inet_addr(group);
         //mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-        mreq.imr_interface.s_addr = inet_addr(ip); /* wlan9 ip address */
+        mreq.imr_interface.s_addr = inet_addr(result.c_str()); /* wlan9 ip address */
 
         setsockopt(sockfd, IPPROTO_IP, IP_MULTICAST_IF, (const char*)&mreq.imr_interface.s_addr, sizeof(struct sockaddr_in));
         setsockopt(sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, (const char*)&mreq, sizeof(mreq));
@@ -2276,9 +2293,13 @@ public:
         memset(&ifr, 0, sizeof(ifr));
         ifr.ifr_addr.sa_family = AF_INET;
         strcpy(ifr.ifr_ifrn.ifrn_name, ifname);
-
-        char *ip = ipv4_address(ifname);
-        printf("WriteMulticastSocket : <%s> %s / %s:%u\n", ifname, ip, group, port);
+#if 0
+        string result;
+        const char *ip = ipv4_address(ifname, result);
+        printf("WriteMulticastSocket : <%s> %s / %s:%u\n", ifname, result.c_str(), group, port);
+#else
+        printf("WriteMulticastSocket : <%s> / %s:%u\n", ifname, group, port);
+#endif
         if(ioctl(sockfd, SIOCGIFFLAGS, &ifr) >= 0 &&
             (ifr.ifr_flags &IFF_UP)) {
             if(setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname)) == -1) {
@@ -2334,9 +2355,9 @@ public:
             if(bShutdown)
                 break;
 
-            char *ip = 0;
             if(m_apMulticastSocket) {
-                ip = ipv4_address(WLAN_AP);
+                string result;
+                const char *ip = ipv4_address(WLAN_AP, result);
                 if(ip) {
                     string raw("BASE_X");
                     switch(m_baseType) {
@@ -2348,7 +2369,10 @@ public:
                             break;
                     }
                     raw.push_back(':');
-                    raw.append(ip);
+                    raw.append(result.c_str());
+#if 1
+                    raw.push_back(':');
+                    raw.append(to_string(m_yaw));
 
                     ifstream in;
                     in.open("/sys/devices/virtual/thermal/thermal_zone0/temp"); // AO-therm
@@ -2368,7 +2392,7 @@ public:
                         raw.append(s);
                         in.close();
                     }
-
+#endif
                     WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
                 } else {
                     /* As AP we should NOT be here ... */
@@ -2409,7 +2433,8 @@ public:
                 break;
 
             if(m_staMulticastSocket) {
-                char *ip = ipv4_address(WLAN_STA);
+                string result;
+                const char *ip = ipv4_address(WLAN_STA, result);
                 if(ip) {
                     string raw("BASE_X");
                     switch(m_baseType) {
@@ -2421,8 +2446,30 @@ public:
                             break;
                     }
                     raw.push_back(':');
-                    raw.append(ip);
-                    
+                    raw.append(result.c_str());
+#if 1
+                    raw.push_back(':');
+                    raw.append(to_string(m_yaw));
+
+                    ifstream in;
+                    in.open("/sys/devices/virtual/thermal/thermal_zone0/temp"); // AO-therm
+                    if(in.is_open()) {
+                        raw.push_back(':');
+                        string s;
+                        in >> s;
+                        raw.append(s);
+                        in.close();
+                    }
+
+                    in.open("/sys/devices/gpu.0/load"); // GPU load
+                    if(in.is_open()) {
+                        raw.push_back(':');
+                        string s;
+                        in >> s;
+                        raw.append(s);
+                        in.close();
+                    }
+#endif                    
                     WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
                 } else {
                     close(m_staMulticastSocket);
