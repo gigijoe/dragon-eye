@@ -68,6 +68,12 @@ using std::chrono::seconds;
 //#define DEBUG
 #endif
 
+#ifdef DEBUG
+#define dprintf(...) do{ fprintf( stderr, __VA_ARGS__ ); } while( false )
+#else
+#define dprintf(...) do{ } while ( false )
+#endif
+
 //#define CAMERA_1080P
 
 #ifdef CAMERA_1080P
@@ -157,7 +163,7 @@ static const char *ipv4_address(const char *dev, string & result) {
                 printf("getnameinfo() failed: %s\n", gai_strerror(s));
                 return 0;
             }
-            //printf("\tipv4 <%s> %s\n", ifa->ifa_name, host);
+            dprintf("\tipv4 <%s> %s\n", ifa->ifa_name, host);
             found = true;
             break;
         }
@@ -441,18 +447,11 @@ public:
         Rect r = m_rects.back();
         rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
 
-        //RNG rng(12345);
         if(m_rects.size() > 1) { /* Minimum 2 points ... */
             for(int i=0;i<m_rects.size()-1;i++) {
-                //Point p0 = m_rects[i].tl();
-                //Point p1 = m_rects[i+1].tl();
                 Point p0 = Center(m_rects[i]);
                 Point p1 = Center(m_rects[i+1]);                
                 line(outFrame, p0, p1, Scalar(0, 0, 255), 1);
-                //Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
-                //line(outFrame, p0, p1, color, 1);
-                //Point v = p1 - p0;
-                //printf("[%d,%d]\n", v.x, v.y);
                 if(drawAll)
                     //rectangle( outFrame, m_rects[i].tl(), m_rects[i].br(), Scalar( 196, 0, 0 ), 2, 8, 0 );
                     rectangle( outFrame, m_rects[i].tl(), m_rects[i].br(), Scalar( (m_rects[0].x + m_rects[0].y) % 255, 0, 0 ), 1, 8, 0 );
@@ -537,11 +536,9 @@ public:
         bool r = false;
         if(m_vectors.size() <= 8 &&
             VectorDistortion() >= 40) { /* 最大位移向量值與最小位移向量值的比例 */
-#ifdef DEBUG
-            printf("\033[0;31m"); /* Red */
-            printf("Velocity distortion %f !!!\n", VectorDistortion());
-            printf("\033[0m"); /* Default color */
-#endif
+            dprintf("\033[0;31m"); /* Red */
+            dprintf("Velocity distortion %f !!!\n", VectorDistortion());
+            dprintf("\033[0m"); /* Default color */
         } else if(enableBugTrigger) { 
             if((m_averageArea < 144 && m_normVelocity > 25) || /* 12 x 12 */
                     (m_averageArea < 256 && m_normVelocity > 40) || /* 16 x 16 */
@@ -550,19 +547,15 @@ public:
                     (m_averageArea < 576 && m_normVelocity > 100) || /* 24 x 24 */
                     (m_averageArea < 900 && m_normVelocity > 125) /* 30 x 30 */
                 ) {
-#ifdef DEBUG
-                printf("\033[0;31m"); /* Red */
-                printf("Bug detected !!! average area = %d, velocity = %f\n", m_averageArea, m_normVelocity);
-                printf("\033[0m"); /* Default color */
-#endif
+                dprintf("\033[0;31m"); /* Red */
+                dprintf("Bug detected !!! average area = %d, velocity = %f\n", m_averageArea, m_normVelocity);
+                dprintf("\033[0m"); /* Default color */
                 m_bugTriggerCount++;
             } else {
                 if(m_bugTriggerCount > 0) {
-#ifdef DEBUG
-                    printf("\033[0;31m"); /* Red */
-                    printf("False trigger due to bug trigger count is %u\n", m_bugTriggerCount);
-                    printf("\033[0m"); /* Default color */
-#endif
+                    dprintf("\033[0;31m"); /* Red */
+                    dprintf("False trigger due to bug trigger count is %u\n", m_bugTriggerCount);
+                    dprintf("\033[0m"); /* Default color */
                     if(m_bugTriggerCount <= 1) /* To avoid false bug detection */
                         m_bugTriggerCount--;
                 } else {
@@ -575,11 +568,9 @@ public:
             r = true;
         }
         if(r) {
-#ifdef DEBUG
-            printf("\033[0;31m"); /* Red */
-            printf("[%u] T R I G G E R (%d)\n", m_id, m_triggerCount);
-            printf("\033[0m"); /* Default color */
-#endif
+            dprintf("\033[0;31m"); /* Red */
+            dprintf("[%u] T R I G G E R (%d)\n", m_id, m_triggerCount);
+            dprintf("\033[0m"); /* Default color */
         }
 
         Info();
@@ -663,7 +654,6 @@ public:
 
                 if(t->m_vectors.size() > 1) {
                     double n = cv::norm(t->m_vectors.back());
-                    //if((n1 > (n * 10) || n > (n1 * 10)))
                     if(n1 > (n * f * 2))
                         continue; /* Too far */
                 }
@@ -721,17 +711,6 @@ public:
 #endif
                     double a = t->CosineAngle(rr->tl());
                     double n2 = cv::norm(rr->tl() - r2.tl());
-#if 0
-                    if(a > 0.5 && 
-                        n2 < (n0 * 1)) { /* cos(PI/3) */
-                        break;
-                    }               
-
-                    if(a > 0.8587 && 
-                        n2 < (n0 * 2)) { /* cos(PI/6) */
-                        break;
-                    }
-#endif
                     /* This number has been tested by various video. Don't touch it !!! */
                     if(a > 0.5 && 
                         n2 < (n0 * f)) { /* cos(PI/3) */
@@ -746,43 +725,37 @@ public:
                     compensation = 4;
                 if((m_lastFrameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET + compensation) || /* Target still missing for over X frames */
                         t->m_vectors.size() == 0) { /* new target with zero velocity */
-#ifdef DEBUG
                     Point p = t->m_rects.back().tl();
-                    printf("\033[0;35m"); /* Puple */
-                    printf("<%u> Lost target : (%d, %d), samples : %lu\n", t->m_id, p.x, p.y, t->m_rects.size());
-                    printf("\033[0m"); /* Default color */
-#endif
+                    dprintf("\033[0;35m"); /* Puple */
+                    dprintf("<%u> Lost target : (%d, %d), samples : %lu\n", t->m_id, p.x, p.y, t->m_rects.size());
+                    dprintf("\033[0m"); /* Default color */
                     t = m_targets.erase(t); /* Remove tracing target */
                     continue;
                 } else {
-#ifdef DEBUG
                     Point p = t->m_rects.back().tl();
-                    printf("<%u> Search target : (%d, %d) -> [%d, %d]\n", t->m_id, p.x, p.y, 
+                    dprintf("<%u> Search target : (%d, %d) -> [%d, %d]\n", t->m_id, p.x, p.y, 
                         (t->m_velocity.x + t->m_acceleration.x) * f, (t->m_velocity.y + t->m_acceleration.y) * f);
-#endif
                     for(list< Target >::iterator tt=m_targets.begin();tt!=m_targets.end();++tt) {
                         if(tt->m_id == t->m_id)
                             continue;
                         if((t->m_rects.back() & tt->m_rects.front()).area() > 0) { /**/
                             t->Update(*tt);
-#ifdef DEBUG
-                            printf("\033[0;33m"); /* Yellow */
-                            printf("Merge targets : <%d> -->> <%d>\n", tt->m_id, t->m_id);
-                            printf("\033[0m"); /* Default color */
-#endif
+
+                            dprintf("\033[0;33m"); /* Yellow */
+                            dprintf("Merge targets : <%d> -->> <%d>\n", tt->m_id, t->m_id);
+                            dprintf("\033[0m"); /* Default color */
+
                             m_targets.erase(tt);
                             break;
                         }
                     }                   
                 }
             } else { /* Target tracked ... */
-#ifdef DEBUG
                 Point p = t->m_rects.back().tl();
-                printf("\033[0;32m"); /* Green */
-                printf("<%u> Target tracked : [%lu](%d, %d) -> (%d, %d)[%d, %d]\n", t->m_id, m_lastFrameTick, p.x, p.y, 
+                dprintf("\033[0;32m"); /* Green */
+                dprintf("<%u> Target tracked : [%lu](%d, %d) -> (%d, %d)[%d, %d]\n", t->m_id, m_lastFrameTick, p.x, p.y, 
                     rr->x, rr->y, rr->x - t->m_rects.back().x, rr->y - t->m_rects.back().y);
-                printf("\033[0m"); /* Default color */
-#endif
+                dprintf("\033[0m"); /* Default color */
                 t->Update(*rr, m_lastFrameTick);
                 roiRect.erase(rr);
             }
@@ -819,16 +792,12 @@ public:
 
             if(enableFakeTargetDetection && 
                 overlap_count >= 2) {
-#ifdef DEBUG
-                printf("[X] Fake target : (%u)\n", overlap_count);
-#endif
+                dprintf("[X] Fake target : (%u)\n", overlap_count);
             } else {
                 m_targets.push_back(Target(*rr, m_lastFrameTick));
-#ifdef DEBUG
-                printf("\033[0;32m"); /* Green */
-                printf("<%u> New target : [%lu](%d, %d)\n", m_targets.back().m_id, m_lastFrameTick, rr->tl().x, rr->tl().y);
-                printf("\033[0m"); /* Default color */
-#endif
+                dprintf("\033[0;32m"); /* Green */
+                dprintf("<%u> New target : [%lu](%d, %d)\n", m_targets.back().m_id, m_lastFrameTick, rr->tl().x, rr->tl().y);
+                dprintf("\033[0m"); /* Default color */
             }
         }
 
@@ -968,7 +937,6 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
     gst_buffer_map (buffer, &map, GST_MAP_WRITE); // make buffer writable
     raw = (gint8 *)map.data;
 
-//cout << __PRETTY_FUNCTION__ << ":" << __LINE__ << endl;
     const Mat & lastFrame = videoOutputQueue.front();
 
     for (int i=0;i<CAMERA_HEIGHT;i++) {
@@ -1079,10 +1047,8 @@ int gst_rtsp_server_task()
     * element with pay%d names will be a stream */
     factory = gst_rtsp_media_factory_new ();
     gst_rtsp_media_factory_set_launch (factory,
-//          "( appsrc name=mysrc is-live=true ! videoconvert ! omxh265enc ! rtph265pay mtu=1400 name=pay0 pt=96 )");
         "appsrc name=mysrc is-live=true ! videoconvert ! \
 omxh265enc control-rate=2 bitrate=1000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
-//nvvidconv flip-method=0 ! omxh265enc control-rate=2 bitrate=1000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 
     gst_rtsp_media_factory_set_shared (factory, TRUE);
     /* notify when our media is ready, This is called whenever someone asks for
@@ -1143,7 +1109,6 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
-//nvvidconv flip-method=0 ! omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
             VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #if 0 /* Always start from index 0 */
         /* 90 secs duration, maximum 100 files */
@@ -1228,7 +1193,6 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 
     try {
         while(1) {
-            //Mat frame = videoOutputQueue.pop();
             const Mat & frame = videoOutputQueue.front();
 
             if(isVideoOutputFile) {
@@ -1268,13 +1232,10 @@ omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%
                 outRTP.write(frame);
             if(isVideoOutputHLS)
                 outHLS.write(frame);
-            //if(isVideoOutputRTSP)
-            //    outRTSP.write(frame);
 
             videoOutputQueue.pop();
         }
     } catch (FrameQueue::cancelled & /*e*/) {
-        // Nothing more to process, we're done
         if(isVideoOutputFile) {
             cout << endl;
             cout << "*** Stop record video ***" << endl;
@@ -1298,7 +1259,6 @@ omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%
         if(isVideoOutputRTSP) {
             cout << endl;
             cout << "*** Stop RTSP video ***" << endl;
-            //outRTSP.release();
             kill(getpid(), SIGHUP);
             if(rtspServerThread.joinable())
                 rtspServerThread.join();
@@ -1319,7 +1279,6 @@ static void ParseConfigString(string & line, vector<pair<string, string> > & cfg
     name = std::regex_replace(name, std::regex(" +$"), ""); /* Remove tail space */
     value = std::regex_replace(value, std::regex("^ +"), ""); /* Remove leading space */
 
-    //cfg.insert(pair<string, string>(name, value));
     cfg.push_back(make_pair(name, value));
 }
 
@@ -1328,7 +1287,6 @@ static size_t ParseConfigFile(char *file, vector<pair<string, string> > & cfg)
     ifstream input(file);
     if(input.is_open()) {
         for(string line; getline( input, line ); ) {
-            //line.erase(remove_if(line.begin(), line.end(), ::isspace), line.end());
             line = std::regex_replace(line, std::regex("^ +| +$|( ) +"), "$1"); /* Strip leading & tail space */
             if(line[0] == '#' || line.empty())
                     continue;
@@ -1624,6 +1582,8 @@ private:
 
     int m_roll, m_pitch, m_yaw;
 
+    bool m_bCompassSuspend = false;
+
     int SetupTTY(int fd, int speed, int parity) {
         struct termios tty;
         memset (&tty, 0, sizeof tty);
@@ -1680,14 +1640,12 @@ private:
             uint8_t header[1] = { 0x00 };
             size_t r = ReadTty(m_ttyTHS1Fd, header, 1);
             if(r != 1) {
-                //std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 continue;
             }
             if(header[0] == 0x55) {
                 uint8_t command[1] = { 0x00 };
                 r = ReadTty(m_ttyTHS1Fd, command, 1);
                 if(r != 1) {
-                    //std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
                 }
                 if(command[0] >= 0x50 && command[0] <= 0x5a) {
@@ -1695,7 +1653,6 @@ private:
                         uint8_t data[9];
                         r = ReadTty(m_ttyTHS1Fd, data, 9);
                         if(r != 9) {
-                            //std::this_thread::sleep_for(std::chrono::milliseconds(10));
                             continue;
                         }
                         uint8_t sum = header[0] + command[0];
@@ -1703,16 +1660,16 @@ private:
                             sum += data[i];
                         }
                         if(sum != data[8]) {
-                            printf("0x%02x 0x%02x checksum error !!!\n", header[0], command[0]);
+                            dprintf("0x%02x 0x%02x checksum error !!!\n", header[0], command[0]);
+                            continue;
                         } else {
                             m_roll = ((data[1] << 8) | data[0]) * 180 / 32768;
                             m_pitch = ((data[3] << 8) | data[2]) * 180 / 32768;
                             m_yaw = ((data[5] << 8) | data[4]) * 180 / 32768;
-                            printf("Roll %d, Pitch %d, Yaw %d\n", m_roll, m_pitch, m_yaw);
+                            dprintf("Roll %d, Pitch %d, Yaw %d\n", m_roll, m_pitch, m_yaw);
                         }
                     }
                 } else {
-                    //std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     continue;
                 }
             }
@@ -1726,7 +1683,6 @@ private:
                 printf("\n");
             }
 #endif
-            //std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
@@ -1780,52 +1736,8 @@ public:
         /* Input */
         gpioExport(m_pushButton);
         gpioSetDirection(m_pushButton, inputPin); /* Pause / Restart */
-
-    #if 0
-        gpioSetEdge(m_pushButton, "rising");
-        int gfd = gpioOpen(m_pushButton);
-        if(gfd) {
-            char v;
-            struct pollfd p;
-            p.fd = fd;
-            poll(&p, 1, -1); /* Discard first IRQ */
-            read(fd, &v, 1);
-            while(1) {
-                poll(&p, 1, -1);
-                if((p.revents & POLLPRI) == POLLPRI) {
-                    lseek(fd, 0, SEEK_SET);
-                    read(fd, &v, 1);
-                    // printf("Interrup GPIO value : %c\n", v);
-                }
-            }
-            gpioCloae(gfd);
-        }
-    #endif
     }
-#if 0
-    int OpenTty() { /* Try ttyUSB0 first then ttyTHS1 */
-        const char *ttyUSB0 = "/dev/ttyUSB0";
-        const char *ttyTHS1 = "/dev/ttyTHS1";
 
-        m_ttyFd = open(ttyUSB0, O_RDWR | O_NOCTTY | O_SYNC);
-        if(m_ttyFd > 0) {
-            SetupTTY(m_ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
-            printf("Open %s successful ...\n", ttyUSB0);
-        } else {
-            printf("Error %d opening %s: %s\n", errno, ttyUSB0, strerror (errno));
-            m_ttyFd = open (ttyTHS1, O_RDWR | O_NOCTTY | O_SYNC);
-            if(m_ttyFd > 0) {
-                SetupTTY(m_ttyFd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
-                printf("Open %s successful ...\n", ttyTHS1);
-            } else
-                printf("Error %d opening %s: %s\n", errno, ttyTHS1, strerror (errno));
-        }
-
-        m_triggerThread = thread(&F3xBase::TriggerTtyTask, this);
-
-        return m_ttyFd;
-    }
-#else
     int OpenTtyUSB0() {
         const char *ttyUSB0 = "/dev/ttyUSB0";
  
@@ -1857,7 +1769,7 @@ public:
 
         return m_ttyTHS1Fd;
     }
-#endif
+
     size_t ReadTty(int fd, uint8_t *data, size_t size) {
         if(data == 0 || size == 0)
             return 0;
@@ -1900,11 +1812,7 @@ public:
             data = (serNo & 0x3f) | 0x40;
             printf("TriggerTtyUSB0 : BASE_B[%d]\r\n", serNo);
         }        
-#if 0
-        write(m_ttyUSB0Fd, &data, 1);
-#else
         m_triggerQueue.push(data);
-#endif
     }
 
     void CloseTtyUSB0() {
@@ -1989,16 +1897,13 @@ public:
         int fromLen = sizeof(from);
         size_t originalSize = size;
         memset(data, 0, size);
-#if 1
+
         int r = recvfrom(m_udpSocket,
                data,
                originalSize,
                0,
                (struct sockaddr *)&from,
                (socklen_t*)&fromLen);
-#else
-        int r = recv(m_udpSocket, data, originalSize, 0);
-#endif
         if(r > 0) {
             m_srcPort = ntohs(from.sin_port);
             m_srcIp = ntohl(from.sin_addr.s_addr);
@@ -2128,6 +2033,9 @@ public:
                 const char stopped[] = "#Stopped";
                 const char compass_lock[] = "#CompassLock";
                 const char compass_unlock[] = "#CompassUnlock";
+                const char compass_save_settings[] = "#CompassSaveSettings";
+                const char compass_suspend[] = "#CompassSuspend";
+                const char compass_resume[] = "#CompassResume";
 
                 if(line == "#SystemSettings") {
                     if(ParseConfigStream(iss, cfg) > 0) {
@@ -2196,16 +2104,31 @@ public:
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
                     const uint8_t cal[] = {0xff, 0xaa, 0x01, 0x07, 0x00}; /* Magntic calibration mode */
                     WriteTty(m_ttyTHS1Fd, cal, 5);
-                    
                     WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_lock), strlen(compass_lock));
                 } else if(line == "#CompassUnlock") {
                     const uint8_t cal[] = {0xff, 0xaa, 0x01, 0x00, 0x00}; /* Exit calibration */
                     WriteTty(m_ttyTHS1Fd, cal, 5);
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_unlock), strlen(compass_unlock));
+                } else if(line == "#CompassSaveSettings") {
                     const uint8_t cmd[] = {0xff, 0xaa, 0x00, 0x00, 0x00}; /* Save current settings */
                     WriteTty(m_ttyTHS1Fd, cmd, 5);
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_unlock), strlen(compass_unlock));
-                }
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_save_settings), strlen(compass_save_settings));
+                } else if(line == "#CompassSuspend") {
+                    if(m_bCompassSuspend)
+                        continue;
+                    m_bCompassSuspend = true;
+                    const uint8_t cal[] = {0xff, 0xaa, 0x22, 0x01, 0x00}; /* Suspend */
+                    WriteTty(m_ttyTHS1Fd, cal, 5);
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_suspend), strlen(compass_suspend));
+                } else if(line == "#CompassResume") {
+                    if(m_bCompassSuspend == false)
+                        continue;
+                    m_bCompassSuspend = false;
+                    const uint8_t cal[] = {0xff, 0xaa, 0x22, 0x01, 0x00}; /* Resume */
+                    WriteTty(m_ttyTHS1Fd, cal, 5);
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_resume), strlen(compass_resume));
+                } 
             }
         }
         CloseUdpSocket();
@@ -2293,13 +2216,9 @@ public:
         memset(&ifr, 0, sizeof(ifr));
         ifr.ifr_addr.sa_family = AF_INET;
         strcpy(ifr.ifr_ifrn.ifrn_name, ifname);
-#if 0
-        string result;
-        const char *ip = ipv4_address(ifname, result);
-        printf("WriteMulticastSocket : <%s> %s / %s:%u\n", ifname, result.c_str(), group, port);
-#else
-        printf("WriteMulticastSocket : <%s> / %s:%u\n", ifname, group, port);
-#endif
+
+        dprintf("WriteMulticastSocket : <%s> / %s:%u\n", ifname, group, port);
+        
         if(ioctl(sockfd, SIOCGIFFLAGS, &ifr) >= 0 &&
             (ifr.ifr_flags &IFF_UP)) {
             if(setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, ifname, strlen(ifname)) == -1) {
@@ -2370,7 +2289,7 @@ public:
                     }
                     raw.push_back(':');
                     raw.append(result.c_str());
-#if 1
+
                     raw.push_back(':');
                     raw.append(to_string(m_yaw));
 
@@ -2392,7 +2311,7 @@ public:
                         raw.append(s);
                         in.close();
                     }
-#endif
+
                     WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
                 } else {
                     /* As AP we should NOT be here ... */
@@ -2447,7 +2366,7 @@ public:
                     }
                     raw.push_back(':');
                     raw.append(result.c_str());
-#if 1
+
                     raw.push_back(':');
                     raw.append(to_string(m_yaw));
 
@@ -2469,7 +2388,7 @@ public:
                         raw.append(s);
                         in.close();
                     }
-#endif                    
+
                     WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
                 } else {
                     close(m_staMulticastSocket);
@@ -2690,8 +2609,24 @@ public:
         return gv;
     }
 
-    int Roll() { return m_roll; }
-    int Pitch() { return m_pitch; }
+    //int Roll() { return m_roll; }
+    int Roll() {
+        int roll = m_roll;
+        if(m_roll > 180) {
+            roll = (360 - m_roll) * (-1);
+        }
+        return roll;
+    }
+
+    //int Pitch() { return m_pitch; }
+    int Pitch() {
+        int pitch = m_pitch;
+        if(m_pitch > 180) {
+            pitch = (360 - m_pitch) * (-1);
+        }
+        return pitch;
+    }
+
     int Yaw() { return m_yaw; }
 
     static void Start();
@@ -2777,30 +2712,18 @@ static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect>
 
     vector< vector<Point> > contours;
     vector< Vec4i > hierarchy;
-//  findContours(foregroundFrame, contours, hierarchy, RETR_TREE, CHAIN_APPROX_NONE);
     findContours(foregroundFrame, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-#if 0
-    sort(contours.begin(), contours.end(), [](vector<cv::Point> contour1, vector<cv::Point> contour2) {  
-            //return (contour1.size() > contour2.size()); /* Outline length */
-            return (cv::contourArea(contour1) > cv::contourArea(contour2)); /* Area */
-        }); /* Contours sort by area, controus[0] is largest */
-#endif
     vector<Rect> boundRect( contours.size() );
     
     for(int i=0; i<contours.size(); i++) {
-        //approxPolyDP( Mat(contours[i]), contours[i], 3, true );
         boundRect[i] = boundingRect( Mat(contours[i]) );
     }
 
     sort(boundRect.begin(), boundRect.end(), [](const Rect & r1, const Rect & r2) {  
-            //return (contour1.size() > contour2.size()); /* Outline length */
             return (r1.area() > r2.area()); /* Area */
         }); /* Rects sort by area, boundRect[0] is largest */
 
     for(int i=0; i<boundRect.size(); i++) {
-        //approxPolyDP( Mat(contours[i]), contours[i], 3, true );
-        //boundRect[i] = boundingRect( Mat(contours[i]) );
-        //drawContours(contoursImg, contours, i, color, 2, 8, hierarchy);
         if(boundRect[i].width > MAX_TARGET_WIDTH &&
             boundRect[i].height > MAX_TARGET_HEIGHT)
             continue; /* Extremely large object */
@@ -2902,10 +2825,7 @@ int main(int argc, char**argv)
 
     int cy = CAMERA_HEIGHT - 1;
     int cx = (CAMERA_WIDTH / 2) - 1;
-#if 0
-    erodeFilter = cuda::createMorphologyFilter(MORPH_ERODE, CV_8UC1, elementErode);
-    dilateFilter = cuda::createMorphologyFilter(MORPH_DILATE, CV_8UC1, elementDilate);
-#else
+
     int erosion_size = 1;   
     elementErode = cv::getStructuringElement(cv::MORPH_RECT,
                     cv::Size(2 * erosion_size + 1, 2 * erosion_size + 1), 
@@ -2915,7 +2835,7 @@ int main(int argc, char**argv)
     elementDilate = cv::getStructuringElement(cv::MORPH_RECT,
                     cv::Size(2 * dilate_size + 1, 2 * dilate_size + 1), 
                     cv::Point(-1, -1) ); /* Default anchor point */
-#endif
+
     cout << endl;
     cout << "### Press button to start object tracking !!!" << endl;
 
@@ -3021,8 +2941,26 @@ int main(int argc, char**argv)
                     rectangle( outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
                     writeText( outFrame, "New Target Restriction Area", Point(120, CAMERA_HEIGHT - 180));
                 }
-                writeText( outFrame, currentDateTime(), Point(80, 40));
                 line(outFrame, Point(0, (CAMERA_HEIGHT / 5) * 4), Point(CAMERA_WIDTH, (CAMERA_HEIGHT / 5) * 4), Scalar(127, 127, 0), 1);
+
+                int viewAngle = 60;
+                int yOffset = 0;
+                int interval = CAMERA_WIDTH / viewAngle;
+                int offset = f3xBase.Yaw() % 10;
+                for(int i=0;i<viewAngle;i++) {
+                    if((offset + i) % 10 == 0) { // Long line
+                        line(outFrame, Point(i * interval, 0), Point(i * interval, 36), Scalar(0, 255, 0), 1);
+                        int yaw = (f3xBase.Yaw() + i) - (viewAngle / 2);
+                        if(yaw < 0)
+                            yaw += 360;
+                        String strYaw = to_string(yaw);
+                        putText(outFrame, strYaw.c_str(), Point(i * interval - (strYaw.size() * 10), 80), FONT_HERSHEY_DUPLEX, 1, Scalar(0, 255, 0), 2, cv::LINE_8);
+                     } else if((offset + i) % 10 == 5) { //
+                        line(outFrame, Point(i * interval, 0), Point(i * interval, 30), Scalar(0, 255, 0), 1);
+                     } else { // Short line
+                        line(outFrame, Point(i * interval, 0), Point(i * interval, 24), Scalar(0, 255, 0), 1);
+                    }
+                }
             }
         }
 
@@ -3093,11 +3031,23 @@ int main(int argc, char**argv)
 
         if(f3xBase.IsVideoOutput()) {
             if(f3xBase.IsVideoOutputResult()) {
+                writeText(outFrame, currentDateTime(), Point(40, 160));
                 char str[32];
                 snprintf(str, 32, "FPS %.2lf", fps);
-                writeText(outFrame, string(str), Point( 40, 80 ));
-                snprintf(str, 32, "Yaw %d", f3xBase.Yaw());
-                writeText(outFrame, string(str), Point( 480, 80 ));
+                writeText(outFrame, string(str), Point( 40, 200 ));
+                
+                //snprintf(str, 32, "Yaw %d", f3xBase.Yaw());
+                //writeText(outFrame, string(str), Point( 480, 200 ));
+
+                int xOffset = 400;
+                int yOffset = 200;
+                writeText(outFrame, "Roll", Point( xOffset, yOffset ));
+                writeText(outFrame, "Pitch", Point( xOffset + 120, yOffset ));
+                writeText(outFrame, "Yaw", Point( xOffset + 240, yOffset ));
+                writeText(outFrame, to_string(f3xBase.Roll()), Point( xOffset, yOffset + 40 ));
+                writeText(outFrame, to_string(f3xBase.Pitch()), Point( xOffset + 120, yOffset + 40 ));
+                writeText(outFrame, to_string(f3xBase.Yaw()), Point( xOffset + 240, yOffset + 40 ));
+
                 videoOutputQueue.push(outFrame.clone());
             } else
                 videoOutputQueue.push(capFrame.clone());
