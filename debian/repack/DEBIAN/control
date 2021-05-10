@@ -1,0 +1,13 @@
+Source: N/A
+Section: applications
+Priority: optional
+Maintainer: Steve Chang <stevegigijoe@yahoo.com.tw>
+Build-Depends: debhelper (>=9)
+Standards-Version: 0.0.1
+Homepage: https://github.com/gigijoe/dragon-eye
+Package: dragon-eye
+Version: 0.0.1.0
+Architecture: arm64
+Depends: libgstrtspserver-1.0-0, gstreamer1.0-libav
+Recommends: 
+Description: dragon-eye - F3F real-time electronic judging system with Jetson Nano
