@@ -1293,8 +1293,9 @@ static size_t ParseConfigFile(char *file, vector<pair<string, string> > & cfg)
             ParseConfigString(line, cfg);
         }
         input.close();
+        return cfg.size();
     }
-    return cfg.size();
+    return 0;
 }
 
 static size_t ParseConfigStream(istringstream & iss, vector<pair<string, string> > & cfg)
@@ -1418,12 +1419,38 @@ nvvidconv flip-method=3 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
         cout << endl;
     }
 
+    const char *defaultConfig = "# White balence 0 : off / 1 : auto\n\
+sensor-id=0\n\
+wbmode=1\n\
+tnr-mode=2\n\
+tnr-strength=-1\n\
+ee-mode=1\n\
+ee-strength=-1\n\
+gainrange=\"1 16\"\n\
+ispdigitalgainrange=\"1 8\"\n\
+exposuretimerange=\"5000000 10000000\"\n\
+# exposure compensation from -2 ~ 2\n\
+exposurecompensation=0\n\
+# exposure threshold from 0 ~ 5\n\
+exposurethreshold=3\n";
+
     void LoadConfig() {
-        char str[STR_SIZE];
-        snprintf(str, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
+        char fn[STR_SIZE];
+        snprintf(fn, STR_SIZE, "%s/camera.config", CONFIG_FILE_DIR);
+        ifstream in(fn);
+        if(in.is_open() == false){
+            cout << "!!! Load default config" << endl;
+            ofstream out(fn);
+            if(out.is_open()) {
+                out << defaultConfig;
+                out.close();
+            }
+        } else
+            in.close();
+
         vector<pair<string, string> > cfg;
-        ParseConfigFile(str, cfg);
-        ApplyConfig(cfg);
+        if(ParseConfigFile(fn, cfg) > 0)
+            ApplyConfig(cfg);
     }
 
     void SaveConfig(string s) {
@@ -2505,9 +2532,32 @@ public:
         }
     }
 
+    const char *defaultConfig = "base.type=A\n\
+base.rtp.remote.host=10.0.0.238\n\
+base.rtp.remote.port=5000\n\
+video.output.screen=no\n\
+video.output.file=no\n\
+video.output.rtp=no\n\
+video.output.hls=no\n\
+video.output.rtsp=yes\n\
+video.output.result=no\n\
+base.mog2.threshold=32\n\
+base.new.target.restriction=no";
+
     void LoadSystemConfig() {
         char fn[STR_SIZE];
         snprintf(fn, STR_SIZE, "%s/system.config", CONFIG_FILE_DIR);
+        ifstream in(fn);
+        if(in.is_open() == false){
+            cout << "!!! Load default config" << endl;
+            ofstream out(fn);
+            if(out.is_open()) {
+                out << defaultConfig;
+                out.close();
+            }
+        } else
+            in.close();
+
         vector<pair<string, string> > cfg;
         if(ParseConfigFile(fn, cfg) > 0)
             ApplySystemConfig(cfg);
@@ -3084,6 +3134,8 @@ int main(int argc, char**argv)
 
     cout << endl;
     cout << "Finished ..." << endl;
+
+    unlink(PID_FILE);
 
     return 0;     
 }
