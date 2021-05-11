@@ -1108,7 +1108,7 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
         /* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
         snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
+omxh264enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
             VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #if 0 /* Always start from index 0 */
         /* 90 secs duration, maximum 100 files */

@@ -41,5 +41,6 @@ sudo -H pip3 install jetson-stats
 sudo systemctl disable gdm3
 sudo systemctl set-default multi-user.target
 
+sudo apt-get install samba -y
 
 

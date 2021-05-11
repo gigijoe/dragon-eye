@@ -22,6 +22,7 @@ chmod 664 /var/nvidia/nvcam/settings/camera_overrides.isp
 chown root:root /var/nvidia/nvcam/settings/camera_overrides.isp
 
 cp -av build/dragon-eye /usr/local/bin
+cp -av ./usr/local/bin/dragon-eye.sh /usr/local/bin
 
 mkdir -p /etc/dragon-eye/
 cp -av ./etc/dragon-eye/* /etc/dragon-eye/
@@ -31,5 +32,4 @@ systemctl enable dragon-eye
 
 mkdir -p /opt/Videos
 
-sudo apt-get install samba -y
 cp -av ./etc/samba/smb.conf /etc/samba
