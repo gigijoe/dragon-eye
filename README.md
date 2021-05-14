@@ -12,7 +12,7 @@ At least four rounds should be completed in order to determine the winner.
 - Multi moving targets tracking base on technology of background subtraction (MOG2)
 - Camera resolution is 720p and frame rate is limited to 30 fps
 - Supports selection 1 of 2 cameras with different angle of view
-- Trigger out GPIO / UART / UDP when target across central line
+- Trigger out GPIO (Relay) / UART / UDP when target across central line
 - Record video files to SD card with or without tracking result
 - Built-in wifi AP for connectivity
 - Built-in RTSP video server (H.265 codec)
@@ -23,12 +23,13 @@ At least four rounds should be completed in order to determine the winner.
 - Camera settings for different scenes such as dim light or over exposure
 - Adjustable MOG2 threshold to reduce nosie or improve object detection 
 - Supports Jetson Nano 2GB Developer Kit for low cost solution
+- Access video files through samba (Windows Network Neighborhood)
 
 #### Hardware Standard Requirement 
 - nVidia Jetson Nano developer kit (Prefer version B01)
 - Cooling fan for Jetson Nano
-- ( Option ) AC8265 WIRELESS NIC module (Intel 8265NGW chipset)
-- EDIMAX EW-7811Un V2 N150 USB wifi dongle
+- AC8265 WIRELESS NIC module (Intel 8265NGW chipset)
+- ( Option ) EDIMAX EW-7811Un V2 N150 USB wifi dongle
 - Raspberry pi camera V2 or camera with IMX219 sensor (MIPI-CSI interface) FoV 77 degree 
 - Raspberry pi camera V2 or camera with IMX219 sensor (MIPI-CSI interface) FoV 160 degree 
 - UV lens protector (37mm) x 2
@@ -66,7 +67,9 @@ At least four rounds should be completed in order to determine the winner.
 - System config / Camera config
 - Play video from RTSP server of dragon-eye
 - Play sound with trigger
-- F3F Timer
+- F3F Timer 
+
+[Demo Video](https://youtu.be/_YH6i1c2meU)
 
 #### Simulator
 [dragon-eye simulator](https://github.com/gigijoe/dragon-eye-simulator)
@@ -123,11 +126,22 @@ sudo reboot
 
 #### Notice of Setup
 
+
 #### MOG2 Threshold
+
+The ‘MOG2 threshold’ setting is the adjustment of background subtraction, the lower the value the more sensitive the camera, but the more noise in the image. The suggested threshold value is between 10 to 30.
+
+#### New Target Restriction
+
+‘New Target Restriction’ is a rectangle region (360 x 180pixals) in the bottom central area of camera view in which new targets will not be detected. It is helpful to prevent false triggers when there‘s grass in bottom of camera view.
 
 #### Fake Target Detection
 
+Fake Target Detection records all new targets in the previous 3 seconds, if there are targets that overlap too many times these targets will be treated as a fake target and will not trigger the system.
+
 #### Bug Trigger
+
+Bug trigger is to prevent false triggers caused by bugs flying through the field of view. Bugs are usually small and fast, so targets that are small in size and at high speed will not cause a  trigger when they cross the central line.
 
 #### Donate
 
