@@ -74,6 +74,8 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
+#define VERSION "v0.1.4"
+
 //#define CAMERA_1080P
 
 #ifdef CAMERA_1080P
@@ -99,7 +101,7 @@ using std::chrono::seconds;
 #define MAX_NUM_FRAME_MISSING_TARGET 3      /* Maximum number of frames to keep tracing lost target */
 
 #define MIN_COURSE_LENGTH            30     /* Minimum course length of RF trigger after detection of cross line */
-#define MIN_TARGET_TRACKED_COUNT     3      /* Minimum target tracked count of RF trigger after detection of cross line */
+#define MIN_TARGET_TRACKED_COUNT     2      /* Minimum target tracked count of RF trigger after detection of cross line */
 
 #define VIDEO_OUTPUT_FPS             30
 #define VIDEO_OUTPUT_DIR             "/opt/Videos"
@@ -313,6 +315,7 @@ public:
         m_rects.push_back(roi);
         m_lastFrameTick = frameTick;
         m_frameTicks.push_back(frameTick);
+        m_averageArea = roi.area();
     }
 
     void Reset() {
@@ -631,14 +634,19 @@ public:
             Rect r1 = t->m_rects.back();
             Rect r2 = r1;
             int f = m_lastFrameTick - t->FrameTick();
-
-            r2.x += (t->m_velocity.x + t->m_acceleration.x) * f;
-            r2.y += (t->m_velocity.y + t->m_acceleration.y) * f;
+            if(t->m_vectors.size() > 0) {
+                Point v = t->m_vectors.back();
+                for(int i=0;i<f;i++) {
+                    v.x += t->m_acceleration.x;
+                    v.y += t->m_acceleration.y;
+                    r2.x += v.x;
+                    r2.y += v.y;
+                }
+            }
 
             double n0 = 0;
             if(t->m_vectors.size() > 0) {
-                Point v = t->m_velocity + t->m_acceleration;
-                n0 = cv::norm(v);
+                n0 = cv::norm(r2.tl() - r1.tl());
             }
             
             for(rr=roiRect.begin();rr!=roiRect.end();++rr) {
@@ -648,7 +656,7 @@ public:
                     continue;
 
                 double n1 = cv::norm(rr->tl() - r1.tl()); /* Distance between object and target */
-#if 1
+
                 if(n1 > 320)
                     continue; /* Too far */
 
@@ -657,17 +665,44 @@ public:
                     if(n1 > (n * f * 2))
                         continue; /* Too far */
                 }
-#endif
+
                 if((r1 & *rr).area() > 0) { /* Target tracked ... */
                     //if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
                         break;                
                 }
 
                 if(t->m_vectors.size() > 0) {
-                    if((r2 & *rr).area() > 0) { /* Target tracked with velocity ... */
-                        //if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
+                    Rect r = r1;
+                    bool tracked = false;
+                    Point v = t->m_vectors.back();
+                    for(int i=0;i<f;i++) {
+                        r.x += v.x;
+                        r.y += v.y;
+                        if((r & *rr).area() > 0) { /* Target tracked with velocity ... */
+                            tracked = true;
                             break;
+                        }
                     }
+                    if(tracked)
+                        break;
+                }
+
+                if(t->m_vectors.size() > 0) {
+                    Rect r = r1;
+                    bool tracked = false;
+                    Point v = t->m_vectors.back();
+                    for(int i=0;i<f;i++) {
+                        v.x += t->m_acceleration.x;
+                        v.y += t->m_acceleration.y;
+                        r.x += v.x;
+                        r.y += v.y;
+                        if((r & *rr).area() > 0) { /* Target tracked with velocity ... */
+                            tracked = true;
+                            break;
+                        }
+                    }
+                    if(tracked)
+                        break;
                 }
 
                 if(t->m_vectors.size() == 0) { /* new target with zero velocity */
@@ -700,7 +735,7 @@ public:
                         continue;
 
                     double n1 = cv::norm(rr->tl() - r1.tl()); /* Distance between object and target */
-#if 1
+
                     if(n1 > 320)
                         continue; /* Too far */
 
@@ -708,10 +743,17 @@ public:
                     //if((n1 > (n * 10) || n > (n1 * 10)))
                     if(n1 > (n * f * 2))
                         continue; /* Too far */
-#endif
-                    double a = t->CosineAngle(rr->tl());
+
+                    double a = t->CosineAngle(rr->tl()); /* Cos angle with top left of ROI */
                     double n2 = cv::norm(rr->tl() - r2.tl());
                     /* This number has been tested by various video. Don't touch it !!! */
+                    if(a > 0.5 && 
+                        n2 < (n0 * f)) { /* cos(PI/3) */
+                        break;
+                    }
+
+                    a = t->CosineAngle(rr->br()); /* Cos angle with bottom right of ROI */
+                    n2 = cv::norm(rr->br() - r2.br());
                     if(a > 0.5 && 
                         n2 < (n0 * f)) { /* cos(PI/3) */
                         break;
@@ -2063,6 +2105,7 @@ public:
                 const char compass_save_settings[] = "#CompassSaveSettings";
                 const char compass_suspend[] = "#CompassSuspend";
                 const char compass_resume[] = "#CompassResume";
+                const char version[] = "#Version";
 
                 if(line == "#SystemSettings") {
                     if(ParseConfigStream(iss, cfg) > 0) {
@@ -2155,7 +2198,9 @@ public:
                     const uint8_t cal[] = {0xff, 0xaa, 0x22, 0x01, 0x00}; /* Resume */
                     WriteTty(m_ttyTHS1Fd, cal, 5);
                     WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_resume), strlen(compass_resume));
-                } 
+                } else if(line == "#Version") {
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(version), strlen(VERSION));
+                }
             }
         }
         CloseUdpSocket();
@@ -2897,7 +2942,7 @@ int main(int argc, char**argv)
     if(bStopped == false)
         F3xBase::Start();
 
-    steady_clock::time_point lastTriggerTime(steady_clock::now());
+    auto lastTriggerTime(steady_clock::now());
 
     while(1) {
         if(bShutdown)
@@ -3065,10 +3110,12 @@ int main(int argc, char**argv)
             }
 
             bool isNewTrigger = false;
-            if(duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count() > 800) { /* new trigger */
+            long long duration = duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count();
+            printf("duration = %lld\n" , duration);
+            if(duration > 150) { /* new trigger */
                 isNewTrigger = true;
-                lastTriggerTime = steady_clock::now();
             }
+            lastTriggerTime = steady_clock::now();
 
             f3xBase.TriggerTtyUSB0(isNewTrigger);
             f3xBase.TriggerSourceUdpSocket(isNewTrigger);
