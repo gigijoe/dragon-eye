@@ -762,14 +762,20 @@ public:
             }
 
             if(rr == roiRect.end()) { /* Target missing ... */
-                uint32_t compensation = (t->TrackedCount() / 10); /* Tracking more frames with more sample */
-                if(compensation > 4)
-                    compensation = 4;
-                if((m_lastFrameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET + compensation) || /* Target still missing for over X frames */
-                        t->m_vectors.size() == 0) { /* new target with zero velocity */
-                    Point p = t->m_rects.back().tl();
+                bool isTargetLost = false;
+                if(t->m_vectors.size() > 1) {
+                    uint32_t compensation = (t->TrackedCount() / 10); /* Tracking more frames with more sample */
+                    if(compensation > 5)
+                        compensation = 5;
+                    if((m_lastFrameTick - t->FrameTick()) > ((MAX_NUM_FRAME_MISSING_TARGET * 3) + compensation)) /* Target still missing for over X frames */
+                        isTargetLost = true;
+                } else { /* new target with zero velocity */
+                    if(m_lastFrameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) 
+                        isTargetLost = true;
+                }
+                if(isTargetLost) {
                     dprintf("\033[0;35m"); /* Puple */
-                    dprintf("<%u> Lost target : (%d, %d), samples : %lu\n", t->m_id, p.x, p.y, t->m_rects.size());
+                    dprintf("<%u> Lost target : (%d, %d), samples : %lu\n", t->m_id, t->m_rects.back().tl().x, t->m_rects.back().tl().y, t->m_rects.size());
                     dprintf("\033[0m"); /* Default color */
                     t = m_targets.erase(t); /* Remove tracing target */
                     continue;
@@ -2105,7 +2111,7 @@ public:
                 const char compass_save_settings[] = "#CompassSaveSettings";
                 const char compass_suspend[] = "#CompassSuspend";
                 const char compass_resume[] = "#CompassResume";
-                const char version[] = "#Version";
+                const char firmware_version[] = "#FirmwareVersion";
 
                 if(line == "#SystemSettings") {
                     if(ParseConfigStream(iss, cfg) > 0) {
@@ -2198,8 +2204,11 @@ public:
                     const uint8_t cal[] = {0xff, 0xaa, 0x22, 0x01, 0x00}; /* Resume */
                     WriteTty(m_ttyTHS1Fd, cal, 5);
                     WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_resume), strlen(compass_resume));
-                } else if(line == "#Version") {
-                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(version), strlen(VERSION));
+                } else if(line == "#FirmwareVersion") {
+                    string ans = firmware_version;
+                    ans.append(":");
+                    ans.append(VERSION);
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ans.c_str()), ans.size());
                 }
             }
         }
@@ -3111,7 +3120,7 @@ int main(int argc, char**argv)
 
             bool isNewTrigger = false;
             long long duration = duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count();
-            printf("duration = %lld\n" , duration);
+            //printf("duration = %lld\n" , duration);
             if(duration > 150) { /* new trigger */
                 isNewTrigger = true;
             }
