@@ -28,6 +28,8 @@
 #include <sys/ioctl.h>
 #include <linux/if.h>
 
+#include <curl/curl.h>
+
 using namespace cv;
 using namespace std;
 
@@ -74,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.4"
+#define VERSION "v0.1.5"
 
 //#define CAMERA_1080P
 
@@ -100,8 +102,8 @@ using std::chrono::seconds;
 #define MAX_NUM_TRIGGER              6      /* Maximum number of RF trigger after detection of cross line */
 #define MAX_NUM_FRAME_MISSING_TARGET 3      /* Maximum number of frames to keep tracing lost target */
 
-#define MIN_COURSE_LENGTH            30     /* Minimum course length of RF trigger after detection of cross line */
-#define MIN_TARGET_TRACKED_COUNT     2      /* Minimum target tracked count of RF trigger after detection of cross line */
+#define MIN_COURSE_LENGTH            16     /* Minimum course length of RF trigger after detection of cross line */
+#define MIN_TARGET_TRACKED_COUNT     3      /* Minimum target tracked count of RF trigger after detection of cross line */
 
 #define VIDEO_OUTPUT_FPS             30
 #define VIDEO_OUTPUT_DIR             "/opt/Videos"
@@ -447,17 +449,22 @@ public:
     }
 
     void Draw(Mat & outFrame, bool drawAll = false) {
+        RNG rng(m_rects.front().area());
+        Scalar color = Scalar( rng.uniform(0, 255), rng.uniform(0,255), rng.uniform(0,255) );
         Rect r = m_rects.back();
-        rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
+        //rectangle( outFrame, r.tl(), r.br(), Scalar( 255, 0, 0 ), 2, 8, 0 );
+        rectangle( outFrame, r.tl(), r.br(), color, 1, 8, 0 );
 
         if(m_rects.size() > 1) { /* Minimum 2 points ... */
             for(int i=0;i<m_rects.size()-1;i++) {
                 Point p0 = Center(m_rects[i]);
                 Point p1 = Center(m_rects[i+1]);                
-                line(outFrame, p0, p1, Scalar(0, 0, 255), 1);
+                //line(outFrame, p0, p1, Scalar(0, 0, 255), 1);
+                line(outFrame, p0, p1, color, 1);
                 if(drawAll)
                     //rectangle( outFrame, m_rects[i].tl(), m_rects[i].br(), Scalar( 196, 0, 0 ), 2, 8, 0 );
-                    rectangle( outFrame, m_rects[i].tl(), m_rects[i].br(), Scalar( (m_rects[0].x + m_rects[0].y) % 255, 0, 0 ), 1, 8, 0 );
+                    //rectangle( outFrame, m_rects[i].tl(), m_rects[i].br(), Scalar( (m_rects[0].x + m_rects[0].y) % 255, 0, 0 ), 1, 8, 0 );
+                    rectangle( outFrame, m_rects[i].tl(), m_rects[i].br(), color, 1, 8, 0 );
             }
         }        
     }
@@ -659,13 +666,13 @@ public:
 
                 if(n1 > 320)
                     continue; /* Too far */
-
+#if 0
                 if(t->m_vectors.size() > 1) {
                     double n = cv::norm(t->m_vectors.back());
                     if(n1 > (n * f * 2))
                         continue; /* Too far */
                 }
-
+#endif
                 if((r1 & *rr).area() > 0) { /* Target tracked ... */
                     //if(t->DotProduct(rr->tl()) >= 0) /* Two vector less than 90 degree */
                         break;                
@@ -713,7 +720,7 @@ public:
                         if(n1 < (rr->width + rr->height) * 3) /* Target tracked with Euclidean distance ... */
                             break;
                     }
-                } else if(n1 < (n0 * f)) { /* Target tracked with velocity and Euclidean distance ... */
+                } else if(n1 < (n0 * 3) / 2) { /* Target tracked with velocity and Euclidean distance ... */
                     if(rr->x < (m_width / 5)) {
                         double a = t->CosineAngle(rr->tl());
                         if(a > 0.9659) /* cos(PI/12) */
@@ -739,23 +746,23 @@ public:
                     if(n1 > 320)
                         continue; /* Too far */
 
-                    double n = cv::norm(t->m_vectors.back());
+                    //double n = cv::norm(t->m_vectors.back());
                     //if((n1 > (n * 10) || n > (n1 * 10)))
-                    if(n1 > (n * f * 2))
+                    if(n1 > (n0 * 3) / 2)
                         continue; /* Too far */
 
                     double a = t->CosineAngle(rr->tl()); /* Cos angle with top left of ROI */
                     double n2 = cv::norm(rr->tl() - r2.tl());
                     /* This number has been tested by various video. Don't touch it !!! */
                     if(a > 0.5 && 
-                        n2 < (n0 * f)) { /* cos(PI/3) */
+                        n2 < (n0 * 3) / 2) { /* cos(PI/3) */
                         break;
                     }
 
                     a = t->CosineAngle(rr->br()); /* Cos angle with bottom right of ROI */
                     n2 = cv::norm(rr->br() - r2.br());
                     if(a > 0.5 && 
-                        n2 < (n0 * f)) { /* cos(PI/3) */
+                        n2 < (n0 * 3) / 2) { /* cos(PI/3) */
                         break;
                     }
                 }
@@ -780,6 +787,7 @@ public:
                     t = m_targets.erase(t); /* Remove tracing target */
                     continue;
                 } else {
+#if 0                    
                     Point p = t->m_rects.back().tl();
                     dprintf("<%u> Search target : (%d, %d) -> [%d, %d]\n", t->m_id, p.x, p.y, 
                         (t->m_velocity.x + t->m_acceleration.x) * f, (t->m_velocity.y + t->m_acceleration.y) * f);
@@ -796,7 +804,8 @@ public:
                             m_targets.erase(tt);
                             break;
                         }
-                    }                   
+                    }
+#endif                                       
                 }
             } else { /* Target tracked ... */
                 Point p = t->m_rects.back().tl();
@@ -1053,9 +1062,9 @@ media_configure (GstRTSPMediaFactory * factory, GstRTSPMedia * media, gpointer u
 #include <glib-object.h>
 #include <glib-unix.h>
 
-// This callback will be inovked when this process receives SIGHUP.
+// This callback will be inovked when this process receives SIGUSR1.
 gboolean HangupSignalCallback(gpointer data) {
-  cout << "Received a signal to terminate the daemon";
+  //out << "Received a signal to terminate the daemon";
   GMainLoop* loop = reinterpret_cast<GMainLoop*>(data);
   g_main_loop_quit(loop);
   // This function can return false to remove this signal handler as we are
@@ -1080,8 +1089,8 @@ int gst_rtsp_server_task()
 
     loop = g_main_loop_new (NULL, FALSE);
 
-    // Set up a signal handler for handling SIGHUP.
-    g_unix_signal_add(SIGHUP, HangupSignalCallback, loop);
+    // Set up a signal handler for handling SIGUSR1.
+    g_unix_signal_add(SIGUSR1, HangupSignalCallback, loop);
     
     /* create a server instance */
     server = gst_rtsp_server_new ();
@@ -1241,6 +1250,9 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 
     try {
         while(1) {
+            if(bShutdown)
+                break;
+
             const Mat & frame = videoOutputQueue.front();
 
             if(isVideoOutputFile) {
@@ -1307,7 +1319,7 @@ omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%
         if(isVideoOutputRTSP) {
             cout << endl;
             cout << "*** Stop RTSP video ***" << endl;
-            kill(getpid(), SIGHUP);
+            kill(getpid(), SIGUSR1);
             if(rtspServerThread.joinable())
                 rtspServerThread.join();
         }
@@ -1611,6 +1623,57 @@ static Camera camera(CAMERA_WIDTH, CAMERA_HEIGHT);
 *
 */
 
+#define FIRMWARE_FILEPATH "/tmp/firmware.img"
+#define DRAGONEYE_FILEPATH "/usr/local/bin/dragon-eye"
+
+static size_t write_data(void *ptr, size_t size, size_t nmemb, void *stream)
+{
+    size_t written = fwrite(ptr, size, nmemb, (FILE *)stream);
+    return written;
+}
+
+static int progress_func(void* ptr, double TotalToDownload, double NowDownloaded, double TotalToUpload, double NowUploaded);
+
+static int DownloadFirmware(unsigned int ip, unsigned short port) {
+    CURLcode res;
+    CURL *curl_handle;
+    static const char *pagefilename = FIRMWARE_FILEPATH;
+    FILE *pagefile;
+
+    string url("http://");
+
+    struct in_addr sin_addr;
+    sin_addr.s_addr = htonl(ip);
+    struct sockaddr_in sa;
+    char buffer[INET_ADDRSTRLEN];
+    inet_ntop( AF_INET, &sin_addr, buffer, sizeof(buffer));
+
+    url.append(buffer);
+    printf("Source UDP %s\n", buffer);
+    url.append(":");
+    url.append(to_string(port));
+    url.append("/firmware.img");
+
+    curl_global_init(CURL_GLOBAL_ALL);
+    curl_handle = curl_easy_init(); /* init the curl session */
+    curl_easy_setopt(curl_handle, CURLOPT_URL, url.c_str()); /* set URL to get here */
+    curl_easy_setopt(curl_handle, CURLOPT_VERBOSE, 1L); /* Switch on full protocol/debug output while testing */
+    curl_easy_setopt(curl_handle, CURLOPT_NOPROGRESS, 0L); // Internal CURL progressmeter must be disabled if we provide our own callback
+    curl_easy_setopt(curl_handle, CURLOPT_PROGRESSFUNCTION, progress_func); // Install the callback function
+    curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, write_data); /* send all data to this function  */
+
+    pagefile = fopen(pagefilename, "wb+");
+    if(pagefile) {
+        curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, pagefile); /* write the page body to this file handle */
+        res = curl_easy_perform(curl_handle); /* get it! */
+        fclose(pagefile); /* close the header file */
+    }
+    curl_easy_cleanup(curl_handle); /* cleanup curl stuff */
+    curl_global_cleanup();
+ 
+    return res == CURLE_OK ? 0 : -1;
+}
+
 #define WLAN_STA    "wlan0"
 #define WLAN_AP     "wlan9"
 
@@ -1700,6 +1763,8 @@ private:
 
     void TriggerTtyUSB0Task() {
         while(m_ttyUSB0Fd) {
+            if(bShutdown)
+                break;
             if(m_triggerQueue.size() > 0) {
                 auto data = m_triggerQueue.front();
                 m_triggerQueue.pop();
@@ -1711,6 +1776,8 @@ private:
 
     void ReadTtyTHS1Task() {
         while(m_ttyTHS1Fd) {
+            if(bShutdown)
+                break;
 #if 1            
             uint8_t header[1] = { 0x00 };
             size_t r = ReadTty(m_ttyTHS1Fd, header, 1);
@@ -2037,8 +2104,6 @@ public:
         to.sin_port = htons(m_srcPort);
         to.sin_addr.s_addr = htonl(m_srcIp);
         
-        //printf("Write to %s:%u ...\n", m_srcIp.c_str(), m_srcPort);
-        
         int s = sendto(m_udpSocket, data, size, 0,(struct sockaddr*)&to, toLen);
 
         return s;
@@ -2080,6 +2145,8 @@ public:
         
         int socketfd = 0;
         while(socketfd == 0) {
+            if(bShutdown)
+                return;
             socketfd = OpenUdpSocket(m_udpLocalPort);
             if(socketfd == 0) {
                 printf("Open UDP socket fail ...\n");
@@ -2209,6 +2276,27 @@ public:
                     ans.append(":");
                     ans.append(VERSION);
                     WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ans.c_str()), ans.size());
+                } else if(line == "#FirmwareUpgrade") {
+                    WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
+                    if(DownloadFirmware(m_srcIp, 8080) == 0) {
+                        printf("Download firmware successful ...\n");
+
+                        std::ifstream src(FIRMWARE_FILEPATH, ios::binary);
+                        std::ofstream dst(DRAGONEYE_FILEPATH, ios::binary | ios::trunc);
+                        dst << src.rdbuf();
+
+                        printf("Update firmware successful ...\n");
+
+                        string result("#FirmwareUpgrade:Success");
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(result.c_str()), result.length());
+
+                        std::this_thread::sleep_for(std::chrono::seconds(2));
+
+                        kill(getpid(), SIGINT); /* Exit then wait systemctl to restart */
+                    } else {
+                        string result("#FirmwareUpgrade:Failed");
+                        WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(result.c_str()), result.length());
+                    }
                 }
             }
         }
@@ -2220,10 +2308,9 @@ public:
     }
 
     void StopUdpServer() {
-        if(m_udpServerThread.joinable()) {
-            m_bUdpServerRun = false;
+        m_bUdpServerRun = false;
+        if(m_udpServerThread.joinable())
             m_udpServerThread.join();
-        }
     }
 
     int OpenMulticastSocket(const char *group, uint16_t port, const char *ifname) {
@@ -2346,6 +2433,8 @@ public:
         m_bApMulticastSenderRun = true;
 
         while(m_apMulticastSocket == 0) {
+            if(bShutdown)
+                return;
             m_apMulticastSocket = OpenMulticastSocket("224.0.0.2", 9002, WLAN_AP);
             if(m_apMulticastSocket == 0) 
                 std::this_thread::sleep_for(std::chrono::seconds(1));            
@@ -2413,16 +2502,17 @@ public:
     }
 
     void StopApMulticastSender() {
-        if(m_apMulticastSenderThread.joinable()) {
-            m_bApMulticastSenderRun = false;
+        m_bApMulticastSenderRun = false;
+        if(m_apMulticastSenderThread.joinable())
             m_apMulticastSenderThread.join();
-        }
     }
 
     void StaMulticastSenderTask() {
         m_bStaMulticastSenderRun = true;
 
         while(m_staMulticastSocket == 0) {
+            if(bShutdown)
+                return;
             m_staMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, WLAN_STA);
             if(m_staMulticastSocket == 0)
                 std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -2497,10 +2587,9 @@ public:
     }
 
     void StopStaMulticastSender() {
-        if(m_staMulticastSenderThread.joinable()) {
-            m_bStaMulticastSenderRun = false;
+        m_bStaMulticastSenderRun = false;
+        if(m_staMulticastSenderThread.joinable())
             m_staMulticastSenderThread.join();
-        }
     }
 
     void ApplySystemConfig(vector<pair<string, string> > & cfg)
@@ -2739,6 +2828,26 @@ base.new.target.restriction=no";
 
 static F3xBase f3xBase; 
 
+int progress_func(void* ptr, double TotalToDownload, double NowDownloaded, double TotalToUpload, double NowUploaded)
+{
+    // ensure that the file to be downloaded is not empty
+    // because that would cause a division by zero error later on
+    if(TotalToDownload <= 0.0) {
+        return 0;
+    }
+
+    int totaldotz = 100; // how wide you want the progress meter to be
+    double fractiondownloaded = NowDownloaded / TotalToDownload;
+    // part of the progressmeter that's already "full"
+    int dotz = (int) round(fractiondownloaded * totaldotz);
+
+    string progress("#UpgradeProgress:");
+    progress.append(to_string(dotz));
+    f3xBase.WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(progress.c_str()), progress.length());
+
+    return 0;
+}
+
 /*
 *
 */
@@ -2807,6 +2916,8 @@ void F3xBase::Stop()
 
     camera.Close();
 
+    signal(SIGUSR1, SIG_IGN); /* Ignore SIGUSR1 here or causes abnormal exit code */
+
     bStopped = true;
 }
 
@@ -2817,8 +2928,11 @@ static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect>
     vector< vector<Point> > contours;
     vector< Vec4i > hierarchy;
     findContours(foregroundFrame, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-    vector<Rect> boundRect( contours.size() );
-    
+    vector<Rect> boundRect( contours.size() );    
+#if 1 /* Anti exposure burst */   
+    if(contours.size() > 64)
+        return;
+#endif
     for(int i=0; i<contours.size(); i++) {
         boundRect[i] = boundingRect( Mat(contours[i]) );
     }
@@ -2845,7 +2959,7 @@ static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect>
         Mat roiFrame = frame(boundRect[i]);
         minMaxLoc(roiFrame, &minVal, &maxVal, &minLoc, &maxLoc ); 
             /* If difference of max and min value of ROI rect is too small then it could be noise such as cloud or sea */
-        if((maxVal - minVal) < 24)
+        if((maxVal - minVal) < 16)
             continue; /* Too small, drop it. */
 #endif
 #if 1
@@ -2890,7 +3004,7 @@ void sig_handler(int signo)
 {
     if(signo == SIGINT) {
         printf("SIGINT\n");
-        kill(getpid(), SIGHUP); /* To stop RTSP server */
+        kill(getpid(), SIGUSR1); /* To stop RTSP server */
         bShutdown = true;
     } 
 }
@@ -2905,6 +3019,8 @@ int main(int argc, char**argv)
 {
     if(signal(SIGINT, sig_handler) == SIG_ERR)
         printf("\ncan't catch SIGINT\n");
+
+    signal(SIGUSR1, SIG_IGN);
 
     ofstream pf(PID_FILE); 
     if(pf) {
@@ -3177,12 +3293,13 @@ int main(int argc, char**argv)
 
     if(f3xBase.IsVideoOutput()) {
         videoOutputQueue.cancel();
-        videoOutputThread.join();
+        if(videoOutputThread.joinable())
+            videoOutputThread.join();
     }
 
     f3xBase.StopStaMulticastSender();
     f3xBase.StopApMulticastSender();
-
+    f3xBase.StopUdpServer();
     f3xBase.CloseTtyUSB0();
     f3xBase.CloseTtyTHS1();
 

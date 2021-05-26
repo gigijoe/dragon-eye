@@ -19,6 +19,8 @@ sudo apt-get install libgtk2.0-dev
 
 sudo apt-get install cmake
 
+sudo apt-get install libcurl4-openssl-dev
+
 wget https://github.com/opencv/opencv/archive/4.4.0.zip
 wget https://github.com/opencv/opencv_contrib/archive/4.4.0.zip
 

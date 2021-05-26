@@ -5,8 +5,8 @@ After=network.target nvargus-daemon.service
 [Service]
 ExecStart=/usr/local/bin/dragon-eye.sh
 Type=simple
-Restart=no-failure
-RestartSec=30
+Restart=on-success
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
