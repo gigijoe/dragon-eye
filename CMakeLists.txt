@@ -29,6 +29,9 @@ include_directories("${GST_INCLUDE_DIRS}")
 
 link_libraries(${GST_LIBRARIES})
 
+set(CURL_LIBRARY "-lcurl")
+find_package(CURL REQUIRED)
+
 INCLUDE_DIRECTORIES(/usr/local/include/opencv4)
 #INCLUDE_DIRECTORIES(/usr/include/glib-2.0)
 #INCLUDE_DIRECTORIES(/usr/lib/aarch64-linux-gnu/glib-2.0/include)
@@ -37,7 +40,7 @@ INCLUDE_DIRECTORIES(/usr/local/include/opencv4)
 #add_subdirectory( jetsonGPIO )
 
 add_executable( dragon-eye dragon-eye.cpp jetsonGPIO/jetsonGPIO.c )
-target_link_libraries( dragon-eye ${OpenCV_LIBS} Threads::Threads ${GST_LIBRARIES})
+target_link_libraries( dragon-eye ${OpenCV_LIBS} Threads::Threads ${GST_LIBRARIES} ${CURL_LIBRARY})
 
 add_executable( test-launch test-launch.c )
 target_link_libraries( test-launch ${GST_LIBRARIES})
