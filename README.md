@@ -50,7 +50,7 @@ At least four rounds should be completed in order to determine the winner.
 - 64GB up SDHC card
 
 #### Software Requirement
-- nVidia Jetpack 4.4 [LT4 32.4.3] or later
+- nVidia Jetpack 4.5.1 [LT4 32.5.1]
 - OpenCV 4.4.0
 - gstreamer-1.x
 
@@ -68,6 +68,7 @@ At least four rounds should be completed in order to determine the winner.
 - Play video from RTSP server of dragon-eye
 - Play sound with trigger
 - F3F Timer 
+- Upgrade dragon-eye firmware
 
 [Demo Video](https://youtu.be/_YH6i1c2meU)
 
@@ -129,7 +130,7 @@ sudo reboot
 
 #### MOG2 Threshold
 
-The ‘MOG2 threshold’ setting is the adjustment of background subtraction, the lower the value the more sensitive the camera, but the more noise in the image. The suggested threshold value is between 10 to 30.
+The ‘MOG2 threshold’ setting is the adjustment of background subtraction, the lower the value the more sensitive the camera, but the more noise in the image. The suggested threshold value is between 8 to 32.
 
 #### New Target Restriction
 

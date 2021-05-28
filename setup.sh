@@ -21,6 +21,10 @@ sudo apt-get install cmake
 
 sudo apt-get install libcurl4-openssl-dev
 
+sudo -H pip3 install jetson-stats
+
+sudo apt-get install samba -y
+
 wget https://github.com/opencv/opencv/archive/4.4.0.zip
 wget https://github.com/opencv/opencv_contrib/archive/4.4.0.zip
 
@@ -38,11 +42,5 @@ sudo make install
 
 cd ../..
 
-sudo -H pip3 install jetson-stats
-
 sudo systemctl disable gdm3
 sudo systemctl set-default multi-user.target
-
-sudo apt-get install samba -y
-
-
