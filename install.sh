@@ -31,6 +31,7 @@ sudo systemctl enable rtwap
 sudo systemctl enable dragon-eye
 
 sudo mkdir -p /opt/Videos
+sudo chmod 775 /opt/Videos
 
 sudo cp -av ./etc/samba/smb.conf /etc/samba
 sudo smbpasswd -a gigijoe

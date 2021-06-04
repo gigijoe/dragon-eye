@@ -7,7 +7,8 @@ sudo apt-get install python3-pip python3-pil
 sudo apt-get install gstreamer1.0-tools gstreamer1.0-alsa \
 gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
 gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
-gstreamer1.0-libav
+gstreamer1.0-libav \
+libgstrtspserver-1.0-0
 
 sudo apt-get install libgstreamer1.0-dev \
 libgstreamer-plugins-base1.0-dev \
@@ -15,7 +16,8 @@ libgstreamer-plugins-good1.0-dev \
 libgstreamer-plugins-bad1.0-dev \
 libgstrtspserver-1.0-dev
 
-sudo apt-get install libgtk2.0-dev
+#sudo apt-get install libgtk2.0-dev
+sudo apt-get install libglib2.0-dev
 
 sudo apt-get install cmake
 
@@ -44,3 +46,9 @@ cd ../..
 
 sudo systemctl disable gdm3
 sudo systemctl set-default multi-user.target
+
+#nmcli d wifi list
+sudo nmcli con add con-name F3F-AP-AC ifname wlan0 type wifi autoconnect yes ssid F3F-AP-AC
+sudo nmcli con modify WiFi wifi-sec.key-mgmt wpa-psk
+sudo nmcli con modify WiFi wifi-sec.psk 0925322362
+sudo nmcli con up F3F-AP-AC
