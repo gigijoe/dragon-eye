@@ -1254,7 +1254,8 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 			if(bShutdown)
 				break;
 
-			const Mat & frame = videoOutputQueue.front();
+			Mat frame = videoOutputQueue.front(); /* Copy frame to avoid frame queue overflow */
+			videoOutputQueue.pop();
 
 			if(isVideoOutputFile) {
 				outFile.write(frame);
@@ -1293,8 +1294,6 @@ omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%
 				outRTP.write(frame);
 			if(isVideoOutputHLS)
 				outHLS.write(frame);
-
-			videoOutputQueue.pop();
 		}
 	} catch (FrameQueue::cancelled & /*e*/) {
 		if(isVideoOutputFile) {
@@ -1635,10 +1634,9 @@ static size_t write_data(void *ptr, size_t size, size_t nmemb, void *stream)
 
 static int progress_func(void* ptr, double TotalToDownload, double NowDownloaded, double TotalToUpload, double NowUploaded);
 
-static int DownloadFirmware(unsigned int ip, unsigned short port) {
+static int DownloadFirmware(unsigned int ip, unsigned short port, const char *pagefilename) {
 	CURLcode res;
 	CURL *curl_handle;
-	static const char *pagefilename = FIRMWARE_FILEPATH;
 	FILE *pagefile;
 
 	string url("http://");
@@ -1683,8 +1681,8 @@ private:
 	int m_ttyUSB0Fd, m_ttyTHS1Fd, m_udpSocket, m_apMulticastSocket, m_staMulticastSocket;
 	BaseType_t m_baseType;
 
-	jetsonNanoGPIONumber m_redLED, m_greenLED, m_blueLED, m_relay;
-	jetsonNanoGPIONumber m_pushButton;
+	jetsonGPIO m_redLED, m_greenLED, m_blueLED, m_relay;
+	jetsonGPIO m_pushButton;
 
 	bool m_isVideoOutputScreen;
 	bool m_isVideoOutputFile;
@@ -1854,9 +1852,31 @@ public:
 	~F3xBase() {}
 
 	void SetupGPIO() {
-		/* 
-		* Do enable GPIO by /etc/profile.d/export-gpio.sh 
-		*/
+/*
+		cat /proc/device-tree/model
+*/
+		ifstream in;
+		in.open("/proc/device-tree/model");
+		if(in.is_open()) {
+			string line;
+			if(getline(in, line)) {
+				cout << line << endl;
+				if(line.find("NVIDIA Jetson Nano Developer Kit") != string::npos) {
+					m_redLED = gpio16;
+					m_greenLED = gpio17;
+					m_blueLED = gpio50;
+					m_relay = gpio51;
+					m_pushButton = gpio18;
+				} else if(line.find("NVIDIA Jetson Xavier NX Developer Kit") != string::npos) {
+					m_redLED = gpio493;
+					m_greenLED = gpio492;
+					m_blueLED = gpio428;
+					m_relay = gpio429;
+					m_pushButton = gpio491;
+				}
+			}
+			in.close();
+		}
 
 		/* Output */
 		gpioExport(m_redLED);
@@ -2293,12 +2313,23 @@ public:
 					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ans.c_str()), ans.size());
 				} else if(line == "#FirmwareUpgrade") {
 					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
-					if(DownloadFirmware(m_srcIp, 8080) == 0) {
+					if(DownloadFirmware(m_srcIp, 8080, FIRMWARE_FILEPATH) == 0) {
 						printf("Download firmware successful ...\n");
 
 						std::ifstream src(FIRMWARE_FILEPATH, ios::binary);
 						std::ofstream dst(DRAGONEYE_FILEPATH, ios::binary | ios::trunc);
-						dst << src.rdbuf();
+						if(src.is_open() && dst.is_open()) {
+							dst << src.rdbuf();
+							src.close();
+							dst.close();
+						} else {
+							if(src.is_open())
+								src.close();
+							if(dst.is_open())
+								dst.close();
+							string result("#FirmwareUpgrade:Failed");
+							WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(result.c_str()), result.length());
+						}
 
 						printf("Update firmware successful ...\n");
 
@@ -2323,7 +2354,24 @@ public:
 					if(rs.size() >= 2) {
 						if(rs[1] == "DeleteAll") {
 							printf("Delete all video files in %s\n", VIDEO_OUTPUT_DIR);
-							remove(VIDEO_OUTPUT_DIR "/*");
+							int count;
+							DIR *dir;
+							struct dirent *ent;
+							if((dir = opendir(VIDEO_OUTPUT_DIR)) != NULL) {
+								while((ent = readdir(dir)) != NULL) {
+									if(ent->d_name) {
+										if((strcmp(".", ent->d_name) == 0) ||
+											strcmp("..", ent->d_name) == 0)
+											continue;
+									}
+									string fn = VIDEO_OUTPUT_DIR;
+									fn.append("/");
+									fn.append(ent->d_name);
+									printf("Delete %s ...\n", fn.c_str());
+									remove(fn.c_str());
+								}
+								closedir(dir);
+							}
 						} else if(rs[1] == "Count") {
 							int count;
 							DIR *dir;
@@ -2338,10 +2386,13 @@ public:
 						}
 					}
 				} else if(line.find("#SystemCommand:", 0) == 0) {
+					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
 					size_t pos = line.find(':', 0);
 					string cmd = line.substr(pos+1, string::npos);
 					printf("Run command : %s\n", cmd.c_str());
 					system(cmd.c_str());
+				} else {
+					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(ack), strlen(ack));
 				}
 			}
 		}

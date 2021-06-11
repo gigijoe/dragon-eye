@@ -27,8 +27,8 @@ sudo -H pip3 install jetson-stats
 
 sudo apt-get install samba -y
 
-wget https://github.com/opencv/opencv/archive/4.4.0.zip
-wget https://github.com/opencv/opencv_contrib/archive/4.4.0.zip
+wget https://github.com/opencv/opencv/archive/4.4.0.zip -O opencv-4.4.0.zip
+wget https://github.com/opencv/opencv_contrib/archive/4.4.0.zip -O opencv_contrib-4.4.0.zip
 
 unzip opencv-4.4.0.zip
 unzip opencv_contrib-4.4.0.zip
@@ -49,6 +49,6 @@ sudo systemctl set-default multi-user.target
 
 #nmcli d wifi list
 sudo nmcli con add con-name F3F-AP-AC ifname wlan0 type wifi autoconnect yes ssid F3F-AP-AC
-sudo nmcli con modify WiFi wifi-sec.key-mgmt wpa-psk
-sudo nmcli con modify WiFi wifi-sec.psk 0925322362
+sudo nmcli con modify F3F-AP-AC wifi-sec.key-mgmt wpa-psk
+sudo nmcli con modify F3F-AP-AC wifi-sec.psk 0925322362
 sudo nmcli con up F3F-AP-AC
