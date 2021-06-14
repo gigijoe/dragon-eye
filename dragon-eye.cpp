@@ -59,12 +59,11 @@ extern "C" {
 #include <gstreamer-1.0/gst/app/app.h>
 }
 
+//using std::chrono::system_clock;
 using std::chrono::steady_clock;
 using std::chrono::duration_cast;
 using std::chrono::microseconds;
 using std::chrono::milliseconds;
-
-//using std::chrono::system_clock;
 using std::chrono::seconds;
 
 #ifndef DEBUG
@@ -77,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.5"
+#define VERSION "v0.1.6"
 
 //#define CAMERA_1080P
 
@@ -85,7 +84,7 @@ using std::chrono::seconds;
 	#define CAMERA_WIDTH 1080
 	#define CAMERA_HEIGHT 1920
 	#define CAMERA_FPS 30
-	#define MIN_TARGET_WIDTH 12
+	#define MIN_TARGET_WIDTH 9
 	#define MIN_TARGET_HEIGHT 12
 	#define MAX_TARGET_WIDTH 480
 	#define MAX_TARGET_HEIGHT 480
@@ -114,6 +113,8 @@ using std::chrono::seconds;
 
 #define STR_SIZE                     1024
 #define CONFIG_FILE_DIR              "/etc/dragon-eye"
+
+typedef enum { JETSON_NANO, JETSON_XAVIER_NX } JetsonDevice_t;
 
 typedef enum { BASE_UNKNOWN, BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType_t;
 
@@ -627,7 +628,16 @@ private:
 	list< list< Rect > > m_newTargetsHistory;
 
 public:
-	Tracker(int width, int height) : m_width(width), m_height(height), m_lastFrameTick(0) {}
+	Tracker() : m_width(CAMERA_WIDTH), m_height(CAMERA_HEIGHT), m_lastFrameTick(0) {}
+	Tracker(int width, int height) : Tracker() {
+		m_width = width;
+		m_height = height;
+	}
+
+	void Initialisize(int width, int height) {
+		m_width = width;
+		m_height = height;
+	}
 
 	void NewTargetRestriction(const Rect & r) {
 		m_newTargetRestrictionRect = r;
@@ -872,7 +882,8 @@ public:
 	inline list< list< Rect > > & NewTargetHistory() { return m_newTargetsHistory; }
 };
 
-static Tracker tracker(CAMERA_WIDTH, CAMERA_HEIGHT);
+//static Tracker tracker(CAMERA_WIDTH, CAMERA_HEIGHT);
+static Tracker tracker;
 
 /*
 *
@@ -888,6 +899,7 @@ public:
 
 	void push(Mat const & image);
 	void pop();
+	size_t size() { return matQueue.size(); }
 	const Mat & front();
 
 	void cancel();
@@ -925,15 +937,8 @@ void FrameQueue::pop()
 {
 	std::unique_lock<std::mutex> mlock(matMutex);
 
-	while(matQueue.empty()) {
-		if (isCancelled) {
-			throw cancelled();
-		}
-		condEvent.wait(mlock);
-		if (isCancelled) {
-			throw cancelled();
-		}
-	}
+	if(matQueue.empty())
+		return;
 
 	if(refCnt > 0)
 		--refCnt;
@@ -946,14 +951,12 @@ const Mat & FrameQueue::front()
 {
 	std::unique_lock<std::mutex> mlock(matMutex);
 
-	while (matQueue.empty()) {
-		if (isCancelled) {
-			throw cancelled();
-		}
+	while (matQueue.empty() && !isCancelled) {
 		condEvent.wait(mlock);
-		if (isCancelled) {
-			throw cancelled();
-		}
+	}
+
+	if(isCancelled) {
+		throw cancelled();
 	}
 
 	++refCnt;
@@ -977,8 +980,16 @@ static FrameQueue videoOutputQueue;
 */
 
 typedef struct {
+	int width;
+	int height;
+	int fps;
+} VideoProperties;
+
+typedef struct {
 	int numberFrames;
 	GstClockTime timestamp;
+	VideoProperties videoProperties;
+	GstBuffer *buffer;
 } RtspServerContext;
 
 /* called when we need to give data to appsrc */
@@ -986,9 +997,15 @@ static void
 need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 {
 	GstBuffer *buffer;
-	uint64_t size = CAMERA_WIDTH * CAMERA_HEIGHT * 4; // Image size * deth of BGRx;
+	uint64_t size = ctx->videoProperties.width * ctx->videoProperties.height * 4; // Image size * deth of BGRx;
 	GstFlowReturn ret;
-	buffer = gst_buffer_new_allocate (NULL, size, NULL);
+
+	if(ctx->buffer == 0) {
+		ctx->buffer = gst_buffer_new_allocate (NULL, size, NULL);
+	}
+	buffer = ctx->buffer;
+
+	//buffer = gst_buffer_new_allocate (NULL, size, NULL);
 	GstMapInfo map;
 	gint8 *raw;
 
@@ -996,18 +1013,29 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 	raw = (gint8 *)map.data;
 
 	const Mat & lastFrame = videoOutputQueue.front();
-
-	for (int i=0;i<CAMERA_HEIGHT;i++) {
+#if 0
+	for (int i=0;i<ctx->videoProperties.height;i++) {
 		const Vec3b* ptr = lastFrame.ptr<Vec3b>(i);
-		for (int j = 0; j<CAMERA_WIDTH; j++) {
-			uint64_t offset = ((i*CAMERA_WIDTH)+j)*4;
+		for (int j = 0; j<ctx->videoProperties.width; j++) {
+			uint64_t offset = ((i*ctx->videoProperties.width)+j)*4;
 			raw[offset] = ptr[j][0];
 			raw[offset+1] = ptr[j][1];
 			raw[offset+2] = ptr[j][2];
 			raw[offset+3] = 127;
 		}
 	}
-
+#else
+	for (int i=0;i<ctx->videoProperties.height;i++) {
+		const Vec3b* ptr = lastFrame.ptr<Vec3b>(i);
+		uint64_t offset = (i*ctx->videoProperties.width) * 4;
+		for (int j=0; j<ctx->videoProperties.width; j++) {
+			raw[offset++] = ptr[j][0];
+			raw[offset++] = ptr[j][1];
+			raw[offset++] = ptr[j][2];
+			raw[offset++] = 127;
+		}
+	}
+#endif
 	videoOutputQueue.pop();
 
 	gst_buffer_unmap (buffer, &map);
@@ -1018,7 +1046,15 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 	ctx->timestamp += GST_BUFFER_DURATION (buffer);
 
 	g_signal_emit_by_name (appsrc, "push-buffer", buffer, &ret);
-	gst_buffer_unref (buffer);
+	//gst_buffer_unref (buffer);
+}
+
+static void free_ctx(gpointer mem) {
+//printf("%s:%d\n", __PRETTY_FUNCTION__, __LINE__);
+	RtspServerContext *ctx = (RtspServerContext *)mem;
+	if(ctx->buffer)
+		gst_buffer_unref(ctx->buffer);
+	g_free(ctx);
 }
 
 /* called when a new media pipeline is constructed. CAMERA_WIDTHe can query the
@@ -1027,9 +1063,9 @@ static void
 media_configure (GstRTSPMediaFactory * factory, GstRTSPMedia * media, gpointer user_data)
 {
 	// should be incremented once on each frame for timestamping
-
 	GstElement *element, *appsrc;
 	RtspServerContext *ctx;
+	VideoProperties *vp = (VideoProperties *)user_data;
 
 	/* get the element used for providing the streams of the media */
 	element = gst_rtsp_media_get_element (media);
@@ -1043,16 +1079,20 @@ media_configure (GstRTSPMediaFactory * factory, GstRTSPMedia * media, gpointer u
 	g_object_set (G_OBJECT (appsrc), "caps",
 	gst_caps_new_simple ("video/x-raw",
 				"format", G_TYPE_STRING, "BGRx",
-				"width", G_TYPE_INT, CAMERA_WIDTH,
-				"height", G_TYPE_INT, CAMERA_HEIGHT,
-				"framerate", GST_TYPE_FRACTION, VIDEO_OUTPUT_FPS, 1, NULL), NULL);
+				"width", G_TYPE_INT, vp->width,
+				"height", G_TYPE_INT, vp->height,
+				"framerate", GST_TYPE_FRACTION, vp->fps, 1, NULL), NULL);
 
 	ctx = g_new0 (RtspServerContext, 1);
 	ctx->timestamp = 0;
 	ctx->numberFrames = 0;
+	ctx->videoProperties.width = vp->width;
+	ctx->videoProperties.height = vp->height;
+	ctx->videoProperties.fps = vp->fps;
+	ctx->buffer = 0;
 
 	/* make sure ther datais freed when the media is gone */
-	g_object_set_data_full (G_OBJECT (media), "my-extra-data", ctx, (GDestroyNotify) g_free);
+	g_object_set_data_full (G_OBJECT (media), "my-extra-data", ctx, (GDestroyNotify) free_ctx);
 
 	/* install the callback that will be called when a buffer is needed */
 	g_signal_connect (appsrc, "need-data", (GCallback) need_data, ctx);
@@ -1074,12 +1114,47 @@ gboolean HangupSignalCallback(gpointer data) {
   return false;
 }
 
-int gst_rtsp_server_task()
+/*
+* https://forums.developer.nvidia.com/t/rtsp-server-cleanup-from-thread-does-not-stop-client-apps-video/107137/15
+*/
+
+std::atomic<uint32_t> g_clientCount(0);
+
+GstRTSPFilterResult clientFilter(GstRTSPServer* server, GstRTSPClient* client, gpointer user) {
+	return GST_RTSP_FILTER_REMOVE;
+}
+
+void closeClients(GstRTSPServer* server)
+{
+	printf("RTSP Server - closing clients [%u]\n", g_clientCount.load());
+	if(g_clientCount.load() > 0)
+		gst_rtsp_server_client_filter(server, clientFilter, nullptr);
+}
+
+void clientClosed(GstRTSPClient* client, gpointer user)
+{
+	printf("RTSP Server - clients closed [%u]\n", --g_clientCount);
+}
+
+void clientConnected(GstRTSPServer* server, GstRTSPClient* client, gpointer user)
+{
+	g_signal_connect(client, "closed", reinterpret_cast<GCallback>(clientClosed), nullptr);
+	printf("RTSP Server - client connected [%u]\n", ++g_clientCount);
+}
+
+static VideoProperties s_videoProperties;
+static GstRTSPServer *s_server = 0;
+
+int gst_rtsp_server_task(int width, int height, int fps)
 {
 	GMainLoop *loop;
-	GstRTSPServer *server;
+	//GstRTSPServer *server;
 	GstRTSPMountPoints *mounts;
 	GstRTSPMediaFactory *factory;
+
+	s_videoProperties.width = width;
+	s_videoProperties.height = height;
+	s_videoProperties.fps = fps;
 
 	char *args[] = {
 		(char*)"gst-rtsp-server",
@@ -1094,24 +1169,30 @@ int gst_rtsp_server_task()
 	g_unix_signal_add(SIGUSR1, HangupSignalCallback, loop);
 	
 	/* create a server instance */
-	server = gst_rtsp_server_new ();
+	s_server = gst_rtsp_server_new ();
 	/* get the mount points for this server, every server has a default object
 	* that be used to map uri mount points to media factories */
-	mounts = gst_rtsp_server_get_mount_points (server);
+	mounts = gst_rtsp_server_get_mount_points (s_server);
 
 	/* make a media factory for a test stream. The default media factory can use
 	* gst-launch syntax to create pipelines.
 	* any launch line works as long as it contains elements named pay%d. Each
 	* element with pay%d names will be a stream */
 	factory = gst_rtsp_media_factory_new ();
+#if 0
 	gst_rtsp_media_factory_set_launch (factory,
 		"appsrc name=mysrc is-live=true ! videoconvert ! \
-omxh265enc control-rate=2 bitrate=1000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
-
+omxh265enc control-rate=2 bitrate=4000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
+#else
+	gst_rtsp_media_factory_set_launch (factory,
+		"appsrc name=mysrc is-live=true ! nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420 ! \
+nvv4l2h265enc maxperf-enable=1 iframeinterval=10 bitrate=4000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
+#endif
+	gst_rtsp_media_factory_set_eos_shutdown(factory, TRUE);
 	gst_rtsp_media_factory_set_shared (factory, TRUE);
 	/* notify when our media is ready, This is called whenever someone asks for
 	* the media and a new pipeline with our appsrc is created */
-	g_signal_connect (factory, "media-configure", (GCallback) media_configure, NULL);
+	g_signal_connect (factory, "media-configure", (GCallback) media_configure, &s_videoProperties);
 
 	/* attach the test factory to the /test url */
 	gst_rtsp_mount_points_add_factory (mounts, "/test", factory);
@@ -1120,13 +1201,46 @@ omxh265enc control-rate=2 bitrate=1000000 ! rtph265pay mtu=1400 name=pay0 pt=96 
 	g_object_unref (mounts);
 
 	/* attach the server to the default maincontext */
-	gst_rtsp_server_attach (server, NULL);
+	const auto server_id = gst_rtsp_server_attach (s_server, NULL);
+
+	g_signal_connect(s_server, "client-connected", reinterpret_cast<GCallback>(clientConnected), nullptr);
 
 	/* start serving */
 	g_print ("stream ready at rtsp://127.0.0.1:8554/test\n");
 	g_main_loop_run (loop);
 
+	printf("RTSP Server - stopped\n");
+
+	if(g_clientCount.load() > 0)
+		closeClients(s_server);
+
+	g_source_remove(server_id);
+	if(G_IS_OBJECT(s_server))
+		g_object_unref(s_server);
+	s_server = 0;
+	if(G_IS_OBJECT(loop))
+		g_object_unref(loop);
+
 	return 0;
+}
+
+static gboolean remove_func (GstRTSPSessionPool *pool, GstRTSPSession *session, GstRTSPServer *server) {
+  return GST_RTSP_FILTER_REMOVE;
+}
+
+void gst_rtsp_server_close_clients() {
+	if(s_server == 0)
+		return;
+
+	printf("RTSP Server - shutdown\n");
+/*	
+	GstRTSPSessionPool *pool;
+	pool = gst_rtsp_server_get_session_pool(s_server);
+	gst_rtsp_session_pool_filter(pool, (GstRTSPSessionPoolFilterFunc) remove_func, s_server);
+	g_object_unref(pool);
+*/	
+	if(g_clientCount.load() > 0)
+		closeClients(s_server); /* It's chance to hang inside if client running */
 }
 
 static thread rtspServerThread;
@@ -1135,9 +1249,11 @@ static thread rtspServerThread;
 *
 */
 
+static bool bVideoTaskRun = false;
+
 void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, 
 	bool isVideoOutputRTP, const char *rtpRemoteHost, uint16_t rtpRemotePort, 
-	bool isVideoOutputHLS, bool isVideoOutputRTSP, int width, int height)
+	bool isVideoOutputHLS, bool isVideoOutputRTSP, int width, int height, int fps)
 {    
 	Size videoSize = Size((int)width,(int)height);
 	char gstStr[STR_SIZE];
@@ -1198,7 +1314,7 @@ udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=3 ! video/x-raw(memory:NVMM) ! \
 nvoverlaysink sync=false ", VIDEO_OUTPUT_FPS);
-		outScreen.open(gstStr, VideoWriter::fourcc('I', '4', '2', '0'), 30, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
+		outScreen.open(gstStr, VideoWriter::fourcc('I', '4', '2', '0'), 30, Size(width, height));
 		cout << endl;
 		cout << gstStr << endl;
 		cout << endl;
@@ -1220,7 +1336,7 @@ omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-str
 h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=%u sync=false async=false ",
 			VIDEO_OUTPUT_FPS, rtpRemoteHost, rtpRemotePort);
 #endif
-		outRTP.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), VIDEO_OUTPUT_FPS, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
+		outRTP.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), VIDEO_OUTPUT_FPS, Size(width, height));
 		cout << endl;
 		cout << gstStr << endl;
 		cout << endl;
@@ -1232,7 +1348,7 @@ h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh264enc control-rate=2 bitrate=4000000 ! h264parse ! mpegtsmux ! \
 hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts target-duration=1 max-files=10 ", VIDEO_OUTPUT_FPS);
-		outHLS.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), VIDEO_OUTPUT_FPS, Size(CAMERA_WIDTH, CAMERA_HEIGHT));
+		outHLS.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), VIDEO_OUTPUT_FPS, Size(width, height));
 		cout << endl;
 		cout << gstStr << endl;
 		cout << endl;
@@ -1240,7 +1356,7 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 	}
 
 	if(isVideoOutputRTSP) {
-		rtspServerThread = thread(&gst_rtsp_server_task);
+		rtspServerThread = thread(&gst_rtsp_server_task, width, height, fps);
 		cout << endl;
 		cout << "*** Start RTSP video ***" << endl;        
 	}
@@ -1248,6 +1364,8 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 	videoOutputQueue.reset();
 
 	steady_clock::time_point t1 = steady_clock::now();
+
+	bVideoTaskRun = true;
 
 	try {
 		while(1) {
@@ -1258,7 +1376,8 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 			videoOutputQueue.pop();
 
 			if(isVideoOutputFile) {
-				outFile.write(frame);
+				if(outFile.isOpened())
+					outFile.write(frame);
 
 				steady_clock::time_point t2 = steady_clock::now();
 				double secs(static_cast<double>(duration_cast<seconds>(t2 - t1).count()));
@@ -1374,11 +1493,16 @@ static size_t ParseConfigStream(istringstream & iss, vector<pair<string, string>
 *
 */
 
+/*
+*
+*/
+
 class Camera {
 private:
 	VideoCapture cap;
 	char gstStr[STR_SIZE];
-	int m_width, m_height;    
+	int m_width, m_height;
+	int m_fps;
 
 public:
 	int sensor_id = 0;
@@ -1392,11 +1516,22 @@ public:
 	string exposuretimerange; /* Default null */
 	float exposurecompensation = 0;
 	int exposurethreshold = 5;
-//    int width, height;
 
-	Camera(int width, int height) : m_width(width), m_height(height), sensor_id(0), wbmode(0), tnr_mode(1), tnr_strength(-1), ee_mode(1), ee_strength(-1), 
+	Camera() : m_width(CAMERA_WIDTH), m_height(CAMERA_HEIGHT), m_fps(CAMERA_FPS), sensor_id(0), wbmode(0), tnr_mode(1), tnr_strength(-1), ee_mode(1), ee_strength(-1),
 		gainrange("1 16"), ispdigitalgainrange("1 8"), exposuretimerange("5000000 10000000"),
 		exposurecompensation(0), exposurethreshold(5) {
+	}
+
+	Camera(int width, int height, int fps) : Camera() {
+		m_width = width;
+		m_height = height;
+		m_fps = fps;
+	}
+
+	void Initialisize(int width, int height, int fps) {
+		m_width = width;
+		m_height = height;
+		m_fps = fps;
 	}
 
 	bool Open() {
@@ -1414,7 +1549,7 @@ nvvidconv flip-method=3 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=3 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
 			sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
-			m_height, m_width, CAMERA_FPS);
+			m_height, m_width, m_fps);
 #endif
 /*
 		snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video1 ! \
@@ -1547,7 +1682,7 @@ exposurethreshold=3\n";
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
 				sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposureTimeRange[i], exposurecompensation,
-				m_width, m_height, CAMERA_FPS);
+				m_width, m_height, m_fps);
 
 			cout << endl;
 			cout << gstStr << endl;
@@ -1615,9 +1750,14 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 		}
 	}
 #endif
+
+	int Width() const { return m_width; }
+	int Height() const { return m_height; }
+	int Fps() const { return m_fps; }
 };
 
-static Camera camera(CAMERA_WIDTH, CAMERA_HEIGHT);
+//static Camera camera(CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
+static Camera camera;
 
 /*
 *
@@ -1675,10 +1815,12 @@ static int DownloadFirmware(unsigned int ip, unsigned short port, const char *pa
 
 #define WLAN_STA    "wlan0"
 #define WLAN_AP     "wlan9"
+#define LAN_ETH		"eth0"
 
 class F3xBase {
 private:
-	int m_ttyUSB0Fd, m_ttyTHS1Fd, m_udpSocket, m_apMulticastSocket, m_staMulticastSocket;
+	int m_ttyUSB0Fd, m_jy901Fd, m_udpSocket, m_apMulticastSocket, m_staMulticastSocket, m_ethMulticastSocket;
+	JetsonDevice_t m_jetsonDevice;
 	BaseType_t m_baseType;
 
 	jetsonGPIO m_redLED, m_greenLED, m_blueLED, m_relay;
@@ -1713,8 +1855,11 @@ private:
 	thread m_staMulticastSenderThread;
 	bool m_bStaMulticastSenderRun;
 
+	thread m_ethMulticastSenderThread;
+	bool m_bEthMulticastSenderRun;
+
 	std::queue<uint8_t> m_triggerQueue;
-	thread m_triggerThread;
+	thread m_triggerTtyUSB0Thread;
 	thread m_jy901sThread;
 
 	int m_roll, m_pitch, m_yaw;
@@ -1761,7 +1906,7 @@ private:
 	}
 
 	void TriggerTtyUSB0Task() {
-		while(m_ttyUSB0Fd) {
+		while(m_ttyUSB0Fd > 0) {
 			if(bShutdown)
 				break;
 			if(m_triggerQueue.size() > 0) {
@@ -1773,26 +1918,26 @@ private:
 		}
 	}
 
-	void ReadTtyTHS1Task() {
-		while(m_ttyTHS1Fd) {
+	void Jy901sTask() {
+		while(m_jy901Fd > 0) {
 			if(bShutdown)
 				break;
 #if 1            
 			uint8_t header[1] = { 0x00 };
-			size_t r = ReadTty(m_ttyTHS1Fd, header, 1);
+			size_t r = ReadTty(m_jy901Fd, header, 1);
 			if(r != 1) {
 				continue;
 			}
 			if(header[0] == 0x55) {
 				uint8_t command[1] = { 0x00 };
-				r = ReadTty(m_ttyTHS1Fd, command, 1);
+				r = ReadTty(m_jy901Fd, command, 1);
 				if(r != 1) {
 					continue;
 				}
 				if(command[0] >= 0x50 && command[0] <= 0x5a) {
 					if(command[0] == 0x53) { /* Angle output */
 						uint8_t data[9];
-						r = ReadTty(m_ttyTHS1Fd, data, 9);
+						r = ReadTty(m_jy901Fd, data, 9);
 						if(r != 9) {
 							continue;
 						}
@@ -1816,7 +1961,7 @@ private:
 			}
 #else
 			uint8_t data[16];
-			size_t r = ReadTty(m_ttyTHS1Fd, data, 16);
+			size_t r = ReadTty(m_jy901Fd, data, 16);
 			if(r > 0) {
 				printf("[ JY901s ] ");
 				for(size_t i=0;i<r;i++)
@@ -1828,7 +1973,8 @@ private:
 	}
 
 public:
-	F3xBase() : m_ttyUSB0Fd(0), m_ttyTHS1Fd(0), m_udpSocket(0), m_apMulticastSocket(0), m_staMulticastSocket(0), m_baseType(BASE_A),
+	F3xBase() : m_ttyUSB0Fd(0), m_jy901Fd(0), m_udpSocket(0),
+		m_apMulticastSocket(0), m_staMulticastSocket(0), m_ethMulticastSocket(0), m_jetsonDevice(JETSON_NANO), m_baseType(BASE_A),
 		m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51), m_pushButton(gpio18),
 		m_isVideoOutputScreen(false), 
 		m_isVideoOutputFile(false), 
@@ -1846,7 +1992,25 @@ public:
 		m_srcIp(0), m_srcPort(0),
 		m_bApMulticastSenderRun(false),
 		m_bStaMulticastSenderRun(false),
-		m_roll(0), m_pitch(0), m_yaw(0) {
+		m_bEthMulticastSenderRun(false),
+		m_roll(0), m_pitch(0), m_yaw(0)
+	{
+		ifstream in;
+		in.open("/proc/device-tree/model");
+		if(in.is_open()) {
+			string line;
+			if(getline(in, line)) {
+				cout << endl;
+				cout << line << endl;
+				cout << endl;
+				if(line.find("NVIDIA Jetson Nano Developer Kit") != string::npos) {
+					m_jetsonDevice = JETSON_NANO;
+				} else if(line.find("NVIDIA Jetson Xavier NX Developer Kit") != string::npos) {
+					m_jetsonDevice = JETSON_XAVIER_NX;
+				}
+			}
+			in.close();
+		}
 	}
 
 	~F3xBase() {}
@@ -1855,27 +2019,21 @@ public:
 /*
 		cat /proc/device-tree/model
 */
-		ifstream in;
-		in.open("/proc/device-tree/model");
-		if(in.is_open()) {
-			string line;
-			if(getline(in, line)) {
-				cout << line << endl;
-				if(line.find("NVIDIA Jetson Nano Developer Kit") != string::npos) {
-					m_redLED = gpio16;
-					m_greenLED = gpio17;
-					m_blueLED = gpio50;
-					m_relay = gpio51;
-					m_pushButton = gpio18;
-				} else if(line.find("NVIDIA Jetson Xavier NX Developer Kit") != string::npos) {
-					m_redLED = gpio493;
-					m_greenLED = gpio492;
-					m_blueLED = gpio428;
-					m_relay = gpio429;
-					m_pushButton = gpio491;
-				}
-			}
-			in.close();
+		switch(m_jetsonDevice) {
+			case JETSON_NANO:
+				m_redLED = gpio16;
+				m_greenLED = gpio17;
+				m_blueLED = gpio50;
+				m_relay = gpio51;
+				m_pushButton = gpio18;
+				break;
+			case JETSON_XAVIER_NX:
+				m_redLED = gpio493;
+				m_greenLED = gpio492;
+				m_blueLED = gpio428;
+				m_relay = gpio429;
+				m_pushButton = gpio491;
+				break;
 		}
 
 		/* Output */
@@ -1901,40 +2059,44 @@ public:
 		gpioSetDirection(m_pushButton, inputPin); /* Pause / Restart */
 	}
 
+	int OpenTty(const char *dev, int speed, int parity) {
+		int fd = open (dev, O_RDWR | O_NOCTTY | O_SYNC);
+		if(fd > 0) {
+			SetupTTY(fd, speed, parity);  // set speed to 9600 bps, 8n1 (no parity)
+			printf("Open %s successful ...\n", dev);
+		} else
+			printf("Error %d opening %s: %s\n", errno, dev, strerror (errno));
+
+		return fd;
+	}
+
 	int OpenTtyUSB0() {
 		const char *ttyUSB0 = "/dev/ttyUSB0";
  
-		m_ttyUSB0Fd = open(ttyUSB0, O_RDWR | O_NOCTTY | O_SYNC);
-		if(m_ttyUSB0Fd > 0) {
-			SetupTTY(m_ttyUSB0Fd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
-			printf("Open %s successful ...\n", ttyUSB0);
-		} else
-			printf("Error %d opening %s: %s\n", errno, ttyUSB0, strerror (errno));
+		m_ttyUSB0Fd = OpenTty(ttyUSB0, B9600, 0);
 
 		if(m_ttyUSB0Fd > 0)
-			m_triggerThread = thread(&F3xBase::TriggerTtyUSB0Task, this);
+			m_triggerTtyUSB0Thread = thread(&F3xBase::TriggerTtyUSB0Task, this);
 
 		return m_ttyUSB0Fd;
 	}
 
-	int OpenTtyTHS1() {
-		const char *ttyTHS1 = "/dev/ttyTHS1";
- 
-		m_ttyTHS1Fd = open (ttyTHS1, O_RDWR | O_NOCTTY | O_SYNC);
-		if(m_ttyTHS1Fd > 0) {
-			SetupTTY(m_ttyTHS1Fd, B9600, 0);  // set speed to 9600 bps, 8n1 (no parity)
-			printf("Open %s successful ...\n", ttyTHS1);
-		} else
-			printf("Error %d opening %s: %s\n", errno, ttyTHS1, strerror (errno));
+	int OpenTtyJy901s() {
+		switch(m_jetsonDevice) {
+			case JETSON_NANO: m_jy901Fd = OpenTty("/dev/ttyTHS1", B9600, 0);
+				break;
+			case JETSON_XAVIER_NX: m_jy901Fd = OpenTty("/dev/ttyTHS0", B9600, 0);
+				break;
+		}
 
-		if(m_ttyTHS1Fd > 0)
-			m_jy901sThread = thread(&F3xBase::ReadTtyTHS1Task, this);
+		if(m_jy901Fd > 0)
+			m_jy901sThread = thread(&F3xBase::Jy901sTask, this);
 
-		return m_ttyTHS1Fd;
+		return m_jy901Fd;
 	}
 
 	size_t ReadTty(int fd, uint8_t *data, size_t size) {
-		if(data == 0 || size == 0)
+		if(fd <= 0 || data == 0 || size == 0)
 			return 0;
 
 		fd_set rfds;
@@ -1953,14 +2115,14 @@ public:
 	}
 
 	size_t WriteTty(int fd, const uint8_t *data, size_t size) {
-		return write(fd, data, size);
+		return (fd > 0) ? write(fd, data, size) : 0;
 	}
 
 	void TriggerTtyUSB0(bool newTrigger) {
 		static uint8_t serNo = 0x3f;
 		uint8_t data;
 
-		if(!m_ttyUSB0Fd)
+		if(m_ttyUSB0Fd <= 0)
 			return;
 
 		if(newTrigger) { /* It's NEW trigger */
@@ -1979,18 +2141,18 @@ public:
 	}
 
 	void CloseTtyUSB0() {
-		if(m_ttyUSB0Fd)
+		if(m_ttyUSB0Fd > 0)
 			close(m_ttyUSB0Fd);
 		m_ttyUSB0Fd = 0;
 
-		if(m_triggerThread.joinable())
-			m_triggerThread.join();
+		if(m_triggerTtyUSB0Thread.joinable())
+			m_triggerTtyUSB0Thread.join();
 	}
 
-	void CloseTtyTHS1() {
-		if(m_ttyTHS1Fd)
-			close(m_ttyTHS1Fd);
-		m_ttyTHS1Fd = 0;
+	void CloseTtyJy901s() {
+		if(m_jy901Fd > 0)
+			close(m_jy901Fd);
+		m_jy901Fd = 0;
 
 		if(m_jy901sThread.joinable())
 			m_jy901sThread.join();
@@ -2278,18 +2440,18 @@ public:
 						WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
 				} else if(line == "#CompassLock") {
 					const uint8_t cmd[] = {0xff, 0xaa, 0x69, 0x88, 0xb5}; /* Enter command mode */
-					WriteTty(m_ttyTHS1Fd, cmd, 5);
+					WriteTty(m_jy901Fd, cmd, 5);
 					std::this_thread::sleep_for(std::chrono::milliseconds(20));
 					const uint8_t cal[] = {0xff, 0xaa, 0x01, 0x07, 0x00}; /* Magntic calibration mode */
-					WriteTty(m_ttyTHS1Fd, cal, 5);
+					WriteTty(m_jy901Fd, cal, 5);
 					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_lock), strlen(compass_lock));
 				} else if(line == "#CompassUnlock") {
 					const uint8_t cal[] = {0xff, 0xaa, 0x01, 0x00, 0x00}; /* Exit calibration */
-					WriteTty(m_ttyTHS1Fd, cal, 5);
+					WriteTty(m_jy901Fd, cal, 5);
 					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_unlock), strlen(compass_unlock));
 				} else if(line == "#CompassSaveSettings") {
 					const uint8_t cmd[] = {0xff, 0xaa, 0x00, 0x00, 0x00}; /* Save current settings */
-					WriteTty(m_ttyTHS1Fd, cmd, 5);
+					WriteTty(m_jy901Fd, cmd, 5);
 					std::this_thread::sleep_for(std::chrono::milliseconds(200));
 					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_save_settings), strlen(compass_save_settings));
 				} else if(line == "#CompassSuspend") {
@@ -2297,14 +2459,14 @@ public:
 						continue;
 					m_bCompassSuspend = true;
 					const uint8_t cal[] = {0xff, 0xaa, 0x22, 0x01, 0x00}; /* Suspend */
-					WriteTty(m_ttyTHS1Fd, cal, 5);
+					WriteTty(m_jy901Fd, cal, 5);
 					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_suspend), strlen(compass_suspend));
 				} else if(line == "#CompassResume") {
 					if(m_bCompassSuspend == false)
 						continue;
 					m_bCompassSuspend = false;
 					const uint8_t cal[] = {0xff, 0xaa, 0x22, 0x01, 0x00}; /* Resume */
-					WriteTty(m_ttyTHS1Fd, cal, 5);
+					WriteTty(m_jy901Fd, cal, 5);
 					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(compass_resume), strlen(compass_resume));
 				} else if(line == "#FirmwareVersion") {
 					string ans = firmware_version;
@@ -2412,7 +2574,7 @@ public:
 	int OpenMulticastSocket(const char *group, uint16_t port, const char *ifname) {
 		string result;
 		const char *ip = ipv4_address(ifname, result);
-		printf("OpenMulticastSocket : <%s> %s / %s:%u\n", ifname, result.c_str(), group, port);
+		dprintf("OpenMulticastSocket : <%s> %s / %s:%u\n", ifname, result.c_str(), group, port);
 
 		if(group == 0 || strlen(group) == 0)
 			return 0;
@@ -2523,6 +2685,46 @@ public:
 			WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
 		if(m_staMulticastSocket)
 			WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
+		if(m_ethMulticastSocket)
+			WriteMulticastSocket(m_ethMulticastSocket, "224.0.0.3", 9003, LAN_ETH, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
+	}
+
+	string MulticastRaw(string & ip) {
+		string raw("BASE_X");
+		switch(m_baseType) {
+			case BASE_A: raw = "BASE_A";
+				break;
+			case BASE_B: raw = "BASE_B";
+				break;
+			default:
+				break;
+		}
+		raw.push_back(':');
+		raw.append(ip.c_str());
+
+		raw.push_back(':');
+		raw.append(to_string(m_yaw));
+
+		ifstream in;
+		in.open("/sys/devices/virtual/thermal/thermal_zone0/temp"); // AO-therm
+		if(in.is_open()) {
+			raw.push_back(':');
+			string s;
+			in >> s;
+			raw.append(s);
+			in.close();
+		}
+
+		in.open("/sys/devices/gpu.0/load"); // GPU load
+		if(in.is_open()) {
+			raw.push_back(':');
+			string s;
+			in >> s;
+			raw.append(s);
+			in.close();
+		}
+
+		return raw;
 	}
 
 	void ApMulticastSenderTask() {
@@ -2544,40 +2746,7 @@ public:
 				string result;
 				const char *ip = ipv4_address(WLAN_AP, result);
 				if(ip) {
-					string raw("BASE_X");
-					switch(m_baseType) {
-						case BASE_A: raw = "BASE_A";
-							break;
-						case BASE_B: raw = "BASE_B";
-							break;
-						default:
-							break;
-					}
-					raw.push_back(':');
-					raw.append(result.c_str());
-
-					raw.push_back(':');
-					raw.append(to_string(m_yaw));
-
-					ifstream in;
-					in.open("/sys/devices/virtual/thermal/thermal_zone0/temp"); // AO-therm
-					if(in.is_open()) {
-						raw.push_back(':');
-						string s;
-						in >> s;
-						raw.append(s);
-						in.close();
-					}
-
-					in.open("/sys/devices/gpu.0/load"); // GPU load
-					if(in.is_open()) {
-						raw.push_back(':');
-						string s;
-						in >> s;
-						raw.append(s);
-						in.close();
-					}
-
+					string raw = MulticastRaw(result);
 					WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
 				} else {
 					/* As AP we should NOT be here ... */
@@ -2622,40 +2791,7 @@ public:
 				string result;
 				const char *ip = ipv4_address(WLAN_STA, result);
 				if(ip) {
-					string raw("BASE_X");
-					switch(m_baseType) {
-						case BASE_A: raw = "BASE_A";
-							break;
-						case BASE_B: raw = "BASE_B";
-							break;
-						default:
-							break;
-					}
-					raw.push_back(':');
-					raw.append(result.c_str());
-
-					raw.push_back(':');
-					raw.append(to_string(m_yaw));
-
-					ifstream in;
-					in.open("/sys/devices/virtual/thermal/thermal_zone0/temp"); // AO-therm
-					if(in.is_open()) {
-						raw.push_back(':');
-						string s;
-						in >> s;
-						raw.append(s);
-						in.close();
-					}
-
-					in.open("/sys/devices/gpu.0/load"); // GPU load
-					if(in.is_open()) {
-						raw.push_back(':');
-						string s;
-						in >> s;
-						raw.append(s);
-						in.close();
-					}
-
+					string raw = MulticastRaw(result);
 					WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
 				} else {
 					close(m_staMulticastSocket);
@@ -2686,6 +2822,58 @@ public:
 		m_bStaMulticastSenderRun = false;
 		if(m_staMulticastSenderThread.joinable())
 			m_staMulticastSenderThread.join();
+	}
+
+	void EthMulticastSenderTask() {
+		m_bEthMulticastSenderRun = true;
+
+		while(m_ethMulticastSocket == 0) {
+			if(bShutdown)
+				return;
+			m_ethMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, LAN_ETH);
+			if(m_ethMulticastSocket == 0)
+				std::this_thread::sleep_for(std::chrono::seconds(1));
+		}
+
+		while(m_bEthMulticastSenderRun) {
+			if(bShutdown)
+				break;
+
+			if(m_ethMulticastSocket) {
+				string result;
+				const char *ip = ipv4_address(LAN_ETH, result);
+				if(ip) {
+					string raw = MulticastRaw(result);
+					WriteMulticastSocket(m_ethMulticastSocket, "224.0.0.3", 9003, LAN_ETH, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
+				} else {
+					close(m_ethMulticastSocket);
+					m_ethMulticastSocket = 0;
+				}
+			} else { /* Wifi disconnected ... */
+				m_ethMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, LAN_ETH);
+				if(m_ethMulticastSocket == 0) {
+					std::this_thread::sleep_for(std::chrono::seconds(1));
+					continue;
+				}
+			}
+
+			std::this_thread::sleep_for(std::chrono::seconds(2));
+		}
+
+		if(m_ethMulticastSocket) {
+			close(m_ethMulticastSocket);
+			m_ethMulticastSocket = 0;
+		}
+	}
+
+	void StartEthMulticastSender() {
+		m_ethMulticastSenderThread = thread(&F3xBase::EthMulticastSenderTask, this);
+	}
+
+	void StopEthMulticastSender() {
+		m_bEthMulticastSenderRun = false;
+		if(m_ethMulticastSenderThread.joinable())
+			m_ethMulticastSenderThread.join();
 	}
 
 	void ApplySystemConfig(vector<pair<string, string> > & cfg)
@@ -2918,6 +3106,13 @@ base.new.target.restriction=no";
 
 	int Yaw() { return m_yaw; }
 
+	void Error(const char *str) {
+		string raw("#Error:");
+		raw.append(str);
+		WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(raw.c_str()), raw.size());
+	}
+
+	static void Initialisize();
 	static void Start();
 	static void Stop();
 };
@@ -2948,6 +3143,33 @@ int progress_func(void* ptr, double TotalToDownload, double NowDownloaded, doubl
 *
 */
 
+static Size minTargetSize(MIN_TARGET_WIDTH, MIN_TARGET_HEIGHT);
+static Size maxTargetSize(MAX_TARGET_WIDTH, MAX_TARGET_HEIGHT);
+
+void F3xBase::Initialisize()
+{
+	switch(f3xBase.m_jetsonDevice) {
+		case JETSON_NANO:
+			camera.Initialisize(720, 1280, 30); /* 720p */
+			tracker.Initialisize(720, 1280);
+			minTargetSize.width = 6;
+			minTargetSize.height = 8;
+			maxTargetSize.width = 320;
+			maxTargetSize.height = 320;
+			break;
+		case JETSON_XAVIER_NX:
+			camera.Initialisize(1080, 1920, 30); /* 1080p */
+			tracker.Initialisize(1080, 1920);
+			//camera.Initialisize(720, 1280, 60); /* 720p60 */
+			//tracker.Initialisize(720, 1280);
+			minTargetSize.width = 9;
+			minTargetSize.height = 12;
+			maxTargetSize.width = 480;
+			maxTargetSize.height = 480;
+			break;
+	}
+}
+
 static Ptr<cuda::BackgroundSubtractorMOG2> bsModel;
 #if 0
 static Ptr<cuda::Filter> erodeFilter;
@@ -2961,8 +3183,16 @@ static thread videoOutputThread;
 
 void F3xBase::Start()
 {
+	camera.UpdateExposure();
+
+	if(camera.Open() == false) {
+		f3xBase.Error("Camera");
+		bStopped = true;
+		return;
+	}
+
 	if(f3xBase.IsNewTargetRestriction())
-		tracker.NewTargetRestriction(Rect(180, CAMERA_HEIGHT - 180, 360, 180));
+		tracker.NewTargetRestriction(Rect(180, camera.Height() - 180, 360, 180));
 	else
 		tracker.NewTargetRestriction(Rect());
 
@@ -2974,12 +3204,8 @@ void F3xBase::Start()
 	bsModel->setVarMax(20);
 	bsModel->setVarMin(4);    
 
-	camera.UpdateExposure();
-
 	cout << endl;
 	cout << "*** Object tracking started ***" << endl;
-
-	camera.Open();
 
 	Mat frame;
 	for(int i=0;i<30;i++) /* Read out unstable frames ... */
@@ -2989,7 +3215,7 @@ void F3xBase::Start()
 		F3xBase & fb = f3xBase;
 		videoOutputThread = thread(&VideoOutputTask, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), 
 			fb.IsVideoOutputRTP(), fb.RtpRemoteHost(), fb.RtpRemotePort(), 
-			fb.IsVideoOutputHLS(), fb.IsVideoOutputRTSP(), CAMERA_WIDTH, CAMERA_HEIGHT);
+			fb.IsVideoOutputHLS(), fb.IsVideoOutputRTSP(), camera.Width(), camera.Height(), camera.Fps());
 	}
 
 	f3xBase.GreenLed(off);
@@ -3005,6 +3231,9 @@ void F3xBase::Stop()
 	cout << "*** Object tracking stoped ***" << endl;
 	
 	if(f3xBase.IsVideoOutput()) {
+		//bVideoTaskRun = false;
+		if(f3xBase.IsVideoOutputRTSP())
+			gst_rtsp_server_close_clients();
 		videoOutputQueue.cancel();
 		if(videoOutputThread.joinable())
 			videoOutputThread.join();
@@ -3038,12 +3267,12 @@ static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect>
 		}); /* Rects sort by area, boundRect[0] is largest */
 
 	for(int i=0; i<boundRect.size(); i++) {
-		if(boundRect[i].width > MAX_TARGET_WIDTH &&
-			boundRect[i].height > MAX_TARGET_HEIGHT)
+		if(boundRect[i].width > maxTargetSize.width &&
+			boundRect[i].height > maxTargetSize.height)
 			continue; /* Extremely large object */
 
-		if(boundRect[i].width < MIN_TARGET_WIDTH && 
-			boundRect[i].height < MIN_TARGET_HEIGHT)
+		if(boundRect[i].width < minTargetSize.width && 
+			boundRect[i].height < minTargetSize.height)
 			break; /* Rest are small objects, ignore them */
 
 #if 1 /* Anti cloud ... */
@@ -3128,19 +3357,21 @@ int main(int argc, char**argv)
 	cuda::printShortCudaDeviceInfo(cuda::getDevice());
 	std::cout << cv::getBuildInformation() << std::endl;
 
-	f3xBase.LoadSystemConfig();
+	f3xBase.Initialisize();
 	f3xBase.SetupGPIO();
 	f3xBase.OpenTtyUSB0();
-	f3xBase.OpenTtyTHS1();
+	f3xBase.OpenTtyJy901s();
+	f3xBase.LoadSystemConfig();
 	f3xBase.StartUdpServer();
-	f3xBase.StartStaMulticastSender();
 	f3xBase.StartApMulticastSender();
+	f3xBase.StartStaMulticastSender();
+	f3xBase.StartEthMulticastSender();
 
 	camera.LoadConfig();
 	camera.UpdateExposure();
 
-	int cy = CAMERA_HEIGHT - 1;
-	int cx = (CAMERA_WIDTH / 2) - 1;
+	int cy = camera.Height() - 1;
+	int cx = (camera.Width() / 2) - 1;
 
 	int erosion_size = 1;   
 	elementErode = cv::getStructuringElement(cv::MORPH_RECT,
@@ -3257,11 +3488,11 @@ int main(int argc, char**argv)
 					rectangle( outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
 					writeText( outFrame, "New Target Restriction Area", Point(120, CAMERA_HEIGHT - 180));
 				}
-				line(outFrame, Point(0, (CAMERA_HEIGHT / 5) * 4), Point(CAMERA_WIDTH, (CAMERA_HEIGHT / 5) * 4), Scalar(127, 127, 0), 1);
+				line(outFrame, Point(0, (camera.Height() / 5) * 4), Point(camera.Width(), (camera.Height() / 5) * 4), Scalar(127, 127, 0), 1);
 
 				int viewAngle = 60;
 				int yOffset = 0;
-				int interval = CAMERA_WIDTH / viewAngle;
+				int interval = camera.Width() / viewAngle;
 				int offset = f3xBase.Yaw() % 10;
 				for(int i=0;i<viewAngle;i++) {
 					if((offset + i) % 10 == 0) { // Long line
@@ -3393,11 +3624,12 @@ int main(int argc, char**argv)
 			videoOutputThread.join();
 	}
 
+	f3xBase.StopEthMulticastSender();
 	f3xBase.StopStaMulticastSender();
 	f3xBase.StopApMulticastSender();
 	f3xBase.StopUdpServer();
 	f3xBase.CloseTtyUSB0();
-	f3xBase.CloseTtyTHS1();
+	f3xBase.CloseTtyJy901s();
 
 	camera.Close();
 

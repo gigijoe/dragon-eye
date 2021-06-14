@@ -10,7 +10,7 @@ At least four rounds should be completed in order to determine the winner.
 
 #### Feature
 - Multi moving targets tracking base on technology of background subtraction (MOG2)
-- Camera resolution is 720p and frame rate is limited to 30 fps
+- Camera resolution is 720p 30fps on Jetson nano / 1080p 30 fps on Jetson Xavier NX
 - Supports selection 1 of 2 cameras with different angle of view
 - Trigger out GPIO (Relay) / UART / UDP when target across central line
 - Record video files to SD card with or without tracking result
@@ -49,6 +49,16 @@ At least four rounds should be completed in order to determine the winner.
 - Panasonic NCR18650PF 3S2P battery pack (Keeps running up to 8+ hours)
 - 64GB up SDHC card
 
+#### Hardware High-end Requirement
+- nVidia Jetson Xavier NX developer kit
+- ( Option ) EDIMAX EW-7811Un V2 N150 USB wifi dongle
+- Raspberry pi camera V2 or camera with IMX219 sensor (MIPI-CSI interface) FoV 77 degree
+- Raspberry pi camera V2 or camera with IMX219 sensor (MIPI-CSI interface) FoV 160 degree
+- UV lens protector (37mm) x 2
+- Lens mount adapter (37mm to 34mm) x 2
+- Panasonic NCR18650PF 4S2P battery pack
+- 64GB up SDHC card
+
 #### Software Requirement
 - nVidia Jetpack 4.5.1 [LT4 32.5.1]
 - OpenCV 4.4.0
@@ -79,6 +89,7 @@ At least four rounds should be completed in order to determine the winner.
 
 #### I/O pin
 
+Jetson nano
 ```
 RED LED - 		GPIO16
 GREEN LED - 	GPIO17
@@ -88,6 +99,18 @@ RELAY -			GPIO51
 
 UART2_TX - 		TTL TX
 UART2_RX - 		TTL RX
+```
+
+Jetson Xavier NX
+```
+RED LED - 		GPIO493
+GREEN LED - 	GPIO492
+Button - 		GPIO491
+BLUE LED - 		GPIO428
+RELAY -			GPIO429
+
+UART1_TX - 		TTL TX
+UART1_RX - 		TTL RX
 ```
 
 #### Software Prepare
