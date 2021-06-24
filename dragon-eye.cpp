@@ -114,6 +114,8 @@ using std::chrono::seconds;
 #define STR_SIZE                     1024
 #define CONFIG_FILE_DIR              "/etc/dragon-eye"
 
+#define HORIZON_FRACTION                4 / 5
+
 typedef enum { JETSON_NANO, JETSON_XAVIER_NX } JetsonDevice_t;
 
 typedef enum { BASE_UNKNOWN, BASE_A, BASE_B, BASE_TIMER, BASE_ANEMOMETER } BaseType_t;
@@ -131,6 +133,8 @@ static bool IsValidateIpAddress(const string & ipAddress)
 
 static bool bShutdown = false;
 static bool bStopped = true;
+static string s_errorString;
+static int s_fps = 0;
 
 typedef enum { EvtStop, EvtStart } EvtType_t;
 static queue<EvtType_t> evtQueue;
@@ -568,7 +572,7 @@ public:
 					dprintf("\033[0;31m"); /* Red */
 					dprintf("False trigger due to bug trigger count is %u\n", m_bugTriggerCount);
 					dprintf("\033[0m"); /* Default color */
-					if(m_bugTriggerCount <= 1) /* To avoid false bug detection */
+					if(m_bugTriggerCount <= 3) /* To avoid false bug detection */
 						m_bugTriggerCount--;
 				} else {
 					m_triggerCount++;
@@ -605,6 +609,11 @@ static inline bool TargetSortByArea(Target & a, Target & b)
 	return a.LastRect().area() > b.LastRect().area();
 }
 
+static inline bool TargetSortByTrackedCount(Target & a, Target & b)
+{
+    return a.TrackedCount() > b.TrackedCount();
+}
+
 static Rect MergeRect(Rect & r1, Rect & r2) {
 	Rect r;
 	r.x = min(r1.x, r2.x);
@@ -626,18 +635,31 @@ private:
 	list< Target > m_targets;
 	Rect m_newTargetRestrictionRect;
 	list< list< Rect > > m_newTargetsHistory;
+	int m_horizonHeight;
+
+    size_t MaxTrackedCountOfTargets() {
+        size_t maxCount = 0;
+        for(list< Target >::iterator t=m_targets.begin();t!=m_targets.end();t++) {
+            if(t->TrackedCount() > maxCount)
+                maxCount = t->TrackedCount();
+        }
+        return maxCount;
+    }
 
 public:
-	Tracker() : m_width(CAMERA_WIDTH), m_height(CAMERA_HEIGHT), m_lastFrameTick(0) {}
+	Tracker() : m_width(CAMERA_WIDTH), m_height(CAMERA_HEIGHT), m_lastFrameTick(0), m_horizonHeight(CAMERA_HEIGHT * HORIZON_FRACTION) {}
 	Tracker(int width, int height) : Tracker() {
 		m_width = width;
 		m_height = height;
+		m_horizonHeight = height * HORIZON_FRACTION;
 	}
 
 	void Initialisize(int width, int height) {
 		m_width = width;
 		m_height = height;
 	}
+
+	int HorizonHeight() const { return m_horizonHeight; }
 
 	void NewTargetRestriction(const Rect & r) {
 		m_newTargetRestrictionRect = r;
@@ -662,9 +684,17 @@ public:
 				}
 			}
 
+			if(r2.x < 0 || r2.x > m_width) {
+				dprintf("\033[0;35m"); /* Puple */
+				dprintf("<%u> Out of range target : (%d, %d), samples : %lu\n", t->m_id, t->m_rects.back().tl().x, t->m_rects.back().tl().y, t->m_rects.size());
+				dprintf("\033[0m"); /* Default color */
+				t = m_targets.erase(t); /* Remove tracing target */
+				continue;
+			}
+
 			double n0 = 0;
 			if(t->m_vectors.size() > 0) {
-				n0 = cv::norm(r2.tl() - r1.tl());
+				n0 = cv::norm(r2.tl() - r1.tl()); /* Moving distance of predict target */
 			}
 			
 			for(rr=roiRect.begin();rr!=roiRect.end();++rr) {
@@ -680,7 +710,7 @@ public:
 #if 0
 				if(t->m_vectors.size() > 1) {
 					double n = cv::norm(t->m_vectors.back());
-					if(n1 > (n * f * 2))
+					if(n1 > (n0 * 3) / 2)
 						continue; /* Too far */
 				}
 #endif
@@ -724,7 +754,7 @@ public:
 				}
 
 				if(t->m_vectors.size() == 0) { /* new target with zero velocity */
-					if(rr->x < (m_width / 5)) {
+					if(rr->y >= m_horizonHeight) {
 						if(n1 < (rr->width + rr->height)) /* Target tracked with Euclidean distance ... */
 							break;
 					} else {
@@ -732,7 +762,7 @@ public:
 							break;
 					}
 				} else if(n1 < (n0 * 3) / 2) { /* Target tracked with velocity and Euclidean distance ... */
-					if(rr->x < (m_width / 5)) {
+					if(rr->y >= m_horizonHeight) {
 						double a = t->CosineAngle(rr->tl());
 						if(a > 0.9659) /* cos(PI/12) */
 							break;
@@ -757,8 +787,6 @@ public:
 					if(n1 > 320)
 						continue; /* Too far */
 
-					//double n = cv::norm(t->m_vectors.back());
-					//if((n1 > (n * 10) || n > (n1 * 10)))
 					if(n1 > (n0 * 3) / 2)
 						continue; /* Too far */
 
@@ -785,10 +813,10 @@ public:
 					uint32_t compensation = (t->TrackedCount() / 10); /* Tracking more frames with more sample */
 					if(compensation > 5)
 						compensation = 5;
-					if((m_lastFrameTick - t->FrameTick()) > ((MAX_NUM_FRAME_MISSING_TARGET * 3) + compensation)) /* Target still missing for over X frames */
+					if(f > ((MAX_NUM_FRAME_MISSING_TARGET * 3) + compensation)) /* Target still missing for over X frames */
 						isTargetLost = true;
 				} else { /* new target with zero velocity */
-					if(m_lastFrameTick - t->FrameTick() > MAX_NUM_FRAME_MISSING_TARGET) 
+					if(f > MAX_NUM_FRAME_MISSING_TARGET) 
 						isTargetLost = true;
 				}
 				if(isTargetLost) {
@@ -841,14 +869,14 @@ public:
 			uint32_t overlap_count = 0;
 			for(auto & l : m_newTargetsHistory) {
 				for(auto & r : l) {
-					if(rr->y < (m_height / 5) * 4)
+					if(rr->y < m_horizonHeight)
 						continue;
 					if((r & *rr).area() > 0) { /* new target overlap previous new target */
 						++overlap_count;
 					}
 				}
 			}
-			if(rr->y >= (m_height / 5) * 4) {
+			if(rr->y >= m_horizonHeight) {
 				if(overlap_count > 0) {
 					rr->x -= rr->width;
 					rr->y -= rr->height;
@@ -874,15 +902,18 @@ public:
 			m_newTargetsHistory.pop_front();
 		}
 
-		if(m_targets.size() > 1)
-			m_targets.sort(TargetSortByArea);
+		if(m_targets.size() > 1) {
+			if(MaxTrackedCountOfTargets() > 6)
+				m_targets.sort(TargetSortByTrackedCount);
+			else
+				m_targets.sort(TargetSortByArea);
+		}
 	}
 
 	inline list< Target > & TargetList() { return m_targets; }
 	inline list< list< Rect > > & NewTargetHistory() { return m_newTargetsHistory; }
 };
 
-//static Tracker tracker(CAMERA_WIDTH, CAMERA_HEIGHT);
 static Tracker tracker;
 
 /*
@@ -1186,7 +1217,8 @@ omxh265enc control-rate=2 bitrate=4000000 ! rtph265pay mtu=1400 name=pay0 pt=96 
 #else
 	gst_rtsp_media_factory_set_launch (factory,
 		"appsrc name=mysrc is-live=true ! nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420 ! \
-nvv4l2h265enc maxperf-enable=1 iframeinterval=10 bitrate=4000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
+nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
+//nvv4l2h265enc maxperf-enable=1 iframeinterval=10 bitrate=8000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 #endif
 	gst_rtsp_media_factory_set_eos_shutdown(factory, TRUE);
 	gst_rtsp_media_factory_set_shared (factory, TRUE);
@@ -1249,8 +1281,6 @@ static thread rtspServerThread;
 *
 */
 
-static bool bVideoTaskRun = false;
-
 void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, 
 	bool isVideoOutputRTP, const char *rtpRemoteHost, uint16_t rtpRemotePort, 
 	bool isVideoOutputHLS, bool isVideoOutputRTSP, int width, int height, int fps)
@@ -1280,10 +1310,17 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
 		if(videoOutoutIndex == VIDEO_OUTPUT_MAX_FILES)
 			videoOutoutIndex = 0; /* Loop */
 		/* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
+#if 0
 		snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
 			VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+#else
+		snprintf(gstStr, STR_SIZE, "appsrc ! \
+nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420, framerate=(fraction)%d/1 ! \
+nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ",
+						VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+#endif
 #if 0 /* Always start from index 0 */
 		/* 90 secs duration, maximum 100 files */
 		snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
@@ -1365,8 +1402,6 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 
 	steady_clock::time_point t1 = steady_clock::now();
 
-	bVideoTaskRun = true;
-
 	try {
 		while(1) {
 			if(bShutdown)
@@ -1391,11 +1426,17 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 						++videoOutoutIndex;
 					else
 						videoOutoutIndex = 0; /* loop */
-
+#if 0
 					snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
 						VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+#else
+					snprintf(gstStr, STR_SIZE, "appsrc ! \
+nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420, framerate=(fraction)%d/1 ! \
+nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ",
+						VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+#endif
 
 					outFile.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), VIDEO_OUTPUT_FPS, videoSize);
 					cout << endl;
@@ -1754,6 +1795,8 @@ nvvidconv flip-method=2 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 	int Width() const { return m_width; }
 	int Height() const { return m_height; }
 	int Fps() const { return m_fps; }
+
+	int ExposureThreshold() const { return exposurethreshold; }
 };
 
 //static Camera camera(CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS);
@@ -1842,6 +1885,7 @@ private:
 	bool m_isNewTargetRestriction;
 	bool m_isFakeTargetDetection;
 	bool m_isBugTrigger;
+	uint16_t m_relayDebouence;
 
 	thread m_udpServerThread;
 	bool m_bUdpServerRun;
@@ -1988,6 +2032,7 @@ public:
 		m_isNewTargetRestriction(false),
 		m_isFakeTargetDetection(false),
 		m_isBugTrigger(false),
+		m_relayDebouence(800),
 		m_bUdpServerRun(false),
 		m_srcIp(0), m_srcPort(0),
 		m_bApMulticastSenderRun(false),
@@ -2302,10 +2347,10 @@ public:
 		string raw;
 		switch(m_baseType) {
 			case BASE_A: raw.append("TRIGGER_A");
-				printf("TriggerSourceUdpSocket : BASE_A[%d]\r\n", serNo);
+				printf("UDP - TRIGGER_A:%d\r\n", serNo);
 				break;
 			case BASE_B: raw.append("TRIGGER_B");
-				printf("TriggerSourceUdpSocket : BASE_B[%d]\r\n", serNo);
+				printf("UDP - TRIGGER_B:%d\r\n", serNo);
 				break;
 			default:
 				break;
@@ -2376,6 +2421,7 @@ public:
 				const char compass_suspend[] = "#CompassSuspend";
 				const char compass_resume[] = "#CompassResume";
 				const char firmware_version[] = "#FirmwareVersion";
+				const char error[] = "#Error";
 
 				if(line == "#SystemSettings") {
 					if(ParseConfigStream(iss, cfg) > 0) {
@@ -2434,7 +2480,11 @@ public:
 					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
 					evtQueue.push(EvtStop);
 				} else if(line == "#Status") {
-					if(bStopped) /* Stopped */
+					if(s_errorString.size() > 0) {
+						string raw("#Error:");
+						raw.append(s_errorString);
+						WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(raw.c_str()), raw.size());
+					} else if(bStopped) /* Stopped */
 						WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
 					else
 						WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
@@ -2496,9 +2546,10 @@ public:
 						printf("Update firmware successful ...\n");
 
 						string result("#FirmwareUpgrade:Success");
-						WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(result.c_str()), result.length());
-
-						std::this_thread::sleep_for(std::chrono::seconds(2));
+						for(int i=0;i<3;i++) {
+							std::this_thread::sleep_for(std::chrono::seconds(1));
+							WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(result.c_str()), result.length());
+						}
 
 						kill(getpid(), SIGINT); /* Exit then wait systemctl to restart */
 					} else {
@@ -2670,10 +2721,10 @@ public:
 		string raw;
 		switch(m_baseType) {
 			case BASE_A: raw.append("TRIGGER_A");
-				printf("TriggerMulticastSocket : BASE_A[%d]\r\n", serNo);
+				printf("Multicast - TRIGGER_A:%d\r\n", serNo);
 				break;
 			case BASE_B: raw.append("TRIGGER_B");
-				printf("TriggerMulticastSocket : BASE_B[%d]\r\n", serNo);
+				printf("Multicast - TRIGGER_B:%d\r\n", serNo);
 				break;
 			default:
 				break;
@@ -2701,9 +2752,12 @@ public:
 		}
 		raw.push_back(':');
 		raw.append(ip.c_str());
-
+/*
 		raw.push_back(':');
 		raw.append(to_string(m_yaw));
+*/
+		raw.push_back(':');
+		raw.append(to_string(s_fps));		
 
 		ifstream in;
 		in.open("/sys/devices/virtual/thermal/thermal_zone0/temp"); // AO-therm
@@ -2955,6 +3009,12 @@ public:
 					m_isVideoOutputResult = true;
 				else
 					m_isVideoOutputResult = false;
+			} else if(it->first == "base.relay.debouence") {
+				string & s = it->second;
+				if(::all_of(s.begin(), s.end(), ::isdigit))
+					m_relayDebouence = stoi(s);
+				else
+					cout << "Invalid " << it->first << "=" << s << endl;			
 			}
 		}
 	}
@@ -2969,7 +3029,8 @@ video.output.hls=no\n\
 video.output.rtsp=yes\n\
 video.output.result=no\n\
 base.mog2.threshold=32\n\
-base.new.target.restriction=no";
+base.new.target.restriction=no\n\
+base.relay.debouence=800";
 
 	void LoadSystemConfig() {
 		char fn[STR_SIZE];
@@ -3057,6 +3118,10 @@ base.new.target.restriction=no";
 
 	inline bool IsBugTrigger() const {
 		return m_isBugTrigger;
+	}
+
+	inline uint16_t RelayDebouence() const {
+		return m_relayDebouence;
 	}
 
 	void RedLed(pinValues onOff) {
@@ -3186,7 +3251,8 @@ void F3xBase::Start()
 	camera.UpdateExposure();
 
 	if(camera.Open() == false) {
-		f3xBase.Error("Camera");
+		s_errorString = "Camera";
+		f3xBase.Error(s_errorString.c_str());
 		bStopped = true;
 		return;
 	}
@@ -3231,7 +3297,6 @@ void F3xBase::Stop()
 	cout << "*** Object tracking stoped ***" << endl;
 	
 	if(f3xBase.IsVideoOutput()) {
-		//bVideoTaskRun = false;
 		if(f3xBase.IsVideoOutputRTSP())
 			gst_rtsp_server_close_clients();
 		videoOutputQueue.cancel();
@@ -3244,6 +3309,7 @@ void F3xBase::Stop()
 	signal(SIGUSR1, SIG_IGN); /* Ignore SIGUSR1 here or causes abnormal exit code */
 
 	bStopped = true;
+	s_fps = 0;
 }
 
 static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect> & roiRect)
@@ -3488,8 +3554,9 @@ int main(int argc, char**argv)
 					rectangle( outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
 					writeText( outFrame, "New Target Restriction Area", Point(120, CAMERA_HEIGHT - 180));
 				}
-				line(outFrame, Point(0, (camera.Height() / 5) * 4), Point(camera.Width(), (camera.Height() / 5) * 4), Scalar(127, 127, 0), 1);
-
+				//line(outFrame, Point(0, (camera.Height() / 5) * 4), Point(camera.Width(), (camera.Height() / 5) * 4), Scalar(127, 127, 0), 1);
+				line(outFrame, Point(0, tracker.HorizonHeight()), Point(camera.Width(), tracker.HorizonHeight()), Scalar(127, 127, 0), 1);
+/*
 				int viewAngle = 60;
 				int yOffset = 0;
 				int interval = camera.Width() / viewAngle;
@@ -3508,6 +3575,7 @@ int main(int argc, char**argv)
 						line(outFrame, Point(i * interval, 0), Point(i * interval, 24), Scalar(0, 255, 0), 1);
 					}
 				}
+*/				
 			}
 		}
 
@@ -3564,18 +3632,18 @@ int main(int argc, char**argv)
 			bool isNewTrigger = false;
 			long long duration = duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count();
 			//printf("duration = %lld\n" , duration);
-			if(duration > 150) { /* new trigger */
+			if(duration > f3xBase.RelayDebouence())
+				f3xBase.Relay(on);
+
+			if(duration > 150) /* new trigger */
 				isNewTrigger = true;
-			}
+
 			lastTriggerTime = steady_clock::now();
 
 			f3xBase.TriggerTtyUSB0(isNewTrigger);
 			f3xBase.TriggerSourceUdpSocket(isNewTrigger);
 			f3xBase.TriggerMulticastSocket(isNewTrigger);
 			f3xBase.RedLed(on);
-
-			if(isNewTrigger)
-				f3xBase.Relay(on);
 		}         
 
 		if(f3xBase.IsVideoOutput()) {
@@ -3587,7 +3655,7 @@ int main(int argc, char**argv)
 				
 				//snprintf(str, 32, "Yaw %d", f3xBase.Yaw());
 				//writeText(outFrame, string(str), Point( 480, 200 ));
-
+/*
 				int xOffset = 400;
 				int yOffset = 200;
 				writeText(outFrame, "Roll", Point( xOffset, yOffset ));
@@ -3596,6 +3664,13 @@ int main(int argc, char**argv)
 				writeText(outFrame, to_string(f3xBase.Roll()), Point( xOffset, yOffset + 40 ));
 				writeText(outFrame, to_string(f3xBase.Pitch()), Point( xOffset + 120, yOffset + 40 ));
 				writeText(outFrame, to_string(f3xBase.Yaw()), Point( xOffset + 240, yOffset + 40 ));
+*/
+				int xOffset = 200;
+				int yOffset = 200;
+				snprintf(str, 32, "MOG2 threshold %d", f3xBase.Mog2Threshold());
+				writeText(outFrame, str, Point( xOffset, yOffset ));
+				snprintf(str, 32, "Exposure threshold %d", camera.ExposureThreshold());
+				writeText(outFrame, str, Point( xOffset, yOffset + 40 ));
 
 				videoOutputQueue.push(outFrame.clone());
 			} else
@@ -3610,6 +3685,8 @@ int main(int argc, char**argv)
 		if(loopCount > 0 && loopCount % VIDEO_OUTPUT_FPS == 0) /* Display fps every second */
 			std::cout << "FPS : " << fixed  << setprecision(2) <<  (1000000.0 / dt_us) << " / " << duration_cast<milliseconds>(t2 - t3).count() << " ms" << std::endl;
 
+		s_fps = static_cast<int>(1000000.0 / dt_us);
+
 		t1 = steady_clock::now();
 	}
 
@@ -3619,6 +3696,8 @@ int main(int argc, char**argv)
 	f3xBase.Relay(off);
 
 	if(f3xBase.IsVideoOutput()) {
+		if(f3xBase.IsVideoOutputRTSP())
+			gst_rtsp_server_close_clients();
 		videoOutputQueue.cancel();
 		if(videoOutputThread.joinable())
 			videoOutputThread.join();
