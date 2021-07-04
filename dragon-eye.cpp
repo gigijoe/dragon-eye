@@ -76,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.6"
+#define VERSION "v0.1.6m"
 
 //#define CAMERA_1080P
 
@@ -98,23 +98,25 @@ using std::chrono::seconds;
 	#define MAX_TARGET_HEIGHT 320
 #endif
 
-#define MAX_NUM_TARGET               9      /* Maximum targets to tracing */
-#define MAX_NUM_TRIGGER              6      /* Maximum number of RF trigger after detection of cross line */
-#define MAX_NUM_FRAME_MISSING_TARGET 3      /* Maximum number of frames to keep tracing lost target */
+#define MAX_TARGET_TRACKING_DISTANCE    360
 
-#define MIN_COURSE_LENGTH            16     /* Minimum course length of RF trigger after detection of cross line */
-#define MIN_TARGET_TRACKED_COUNT     3      /* Minimum target tracked count of RF trigger after detection of cross line */
+#define MAX_NUM_TARGET               	9      /* Maximum targets to tracing */
+#define MAX_NUM_TRIGGER              	6      /* Maximum number of RF trigger after detection of cross line */
+#define MAX_NUM_FRAME_MISSING_TARGET 	3      /* Maximum number of frames to keep tracing lost target */
 
-#define VIDEO_OUTPUT_FPS             30
-#define VIDEO_OUTPUT_DIR             "/opt/Videos"
-#define VIDEO_OUTPUT_FILE_NAME       "base"
-#define VIDEO_FILE_OUTPUT_DURATION   90     /* Video file duration 90 secends */
-#define VIDEO_OUTPUT_MAX_FILES       400    /* Needs about 30G bytes disk space */
+#define MIN_COURSE_LENGTH            	16     /* Minimum course length of RF trigger after detection of cross line */
+#define MIN_TARGET_TRACKED_COUNT     	3      /* Minimum target tracked count of RF trigger after detection of cross line */
 
-#define STR_SIZE                     1024
-#define CONFIG_FILE_DIR              "/etc/dragon-eye"
+#define VIDEO_OUTPUT_FPS             	30
+#define VIDEO_OUTPUT_DIR             	"/opt/Videos"
+#define VIDEO_OUTPUT_FILE_NAME       	"base"
+#define VIDEO_FILE_OUTPUT_DURATION   	90     /* Video file duration 90 secends */
+#define VIDEO_OUTPUT_MAX_FILES       	400    /* Needs about 30G bytes disk space */
 
-#define HORIZON_FRACTION                4 / 5
+#define STR_SIZE                     	1024
+#define CONFIG_FILE_DIR              	"/etc/dragon-eye"
+
+#define HORIZON_RATIO                	8 / 10
 
 typedef enum { JETSON_NANO, JETSON_XAVIER_NX } JetsonDevice_t;
 
@@ -272,6 +274,10 @@ inline void writeText( Mat & mat, const string text, const Point textOrg)
 *
 */
 
+static inline Point Center(Rect & r) {
+	return Point(r.tl().x + (r.width / 2), r.tl().y + (r.height / 2));
+}
+
 class Target
 {
 protected:
@@ -293,10 +299,6 @@ protected:
 	double m_angleOfTurn;
 
 	static uint32_t s_id;
-
-	const Point & Center(Rect & r) {
-		return std::move(Point(r.tl().x + (r.width / 2), r.tl().y + (r.height / 2)));
-	}
 
 	double CosineAngle(const Point & v1, const Point & v2) {
 		/* A.B = |A||B|cos() */
@@ -412,7 +414,7 @@ public:
 		m_rects.push_back(roi);
 		m_lastFrameTick = frameTick;
 		m_frameTicks.push_back(frameTick);
-#if 0
+#if 1
 		if(m_triggerCount >= MAX_NUM_TRIGGER)
 			Reset();
 #endif
@@ -438,21 +440,55 @@ public:
 		return dp;
 	}
 
-	double CosineAngle(const Point & p) {
-		size_t i = m_rects.size();
-		if(i < 2)
-			return 0;
-		i--;
-		Point v1, v2;
-		v1.x = p.x - m_rects[i].tl().x;
-		v1.y = p.y - m_rects[i].tl().y;
-		v2.x = m_rects[i].tl().x - m_rects[i-1].tl().x;
-		v2.y = m_rects[i].tl().y - m_rects[i-1].tl().y;
+    double CosineAngleTl(const Point & p) {
+        size_t i = m_rects.size();
+        if(i < 2)
+            return 0;
+        --i;
+        Point v1, v2;
+        v1.x = p.x - m_rects[i].tl().x;
+        v1.y = p.y - m_rects[i].tl().y;
+        v2.x = m_rects[i].tl().x - m_rects[i-1].tl().x;
+        v2.y = m_rects[i].tl().y - m_rects[i-1].tl().y;
 
-		/* A.B = |A||B|cos() */
-		/* cos() = A.B / |A||B| */
-		return v1.dot(v2) / (norm(v1) * norm(v2));
-	}
+        /* A.B = |A||B|cos() */
+        /* cos() = A.B / |A||B| */
+        return v1.dot(v2) / (norm(v1) * norm(v2));
+    }
+
+    double CosineAngleBr(const Point & p) {
+        size_t i = m_rects.size();
+        if(i < 2)
+            return 0;
+        --i;
+        Point v1, v2;
+        v1.x = p.x - m_rects[i].br().x;
+        v1.y = p.y - m_rects[i].br().y;
+        v2.x = m_rects[i].br().x - m_rects[i-1].br().x;
+        v2.y = m_rects[i].br().y - m_rects[i-1].br().y;
+
+        /* A.B = |A||B|cos() */
+        /* cos() = A.B / |A||B| */
+        return v1.dot(v2) / (norm(v1) * norm(v2));
+    }
+
+    double CosineAngleCt(const Point & p) {
+        size_t i = m_rects.size();
+        if(i < 2)
+            return 0;
+        --i;
+        Point v1, v2;
+        Point ct0 = Center(m_rects[i]);
+        Point ct1 = Center(m_rects[i-1]);
+        v1.x = p.x - ct0.x;
+        v1.y = p.y - ct0.y;
+        v2.x = ct0.x - ct1.x;
+        v2.y = ct0.y - ct1.y;
+
+        /* A.B = |A||B|cos() */
+        /* cos() = A.B / |A||B| */
+        return v1.dot(v2) / (norm(v1) * norm(v2));
+    }
 
 	void Draw(Mat & outFrame, bool drawAll = false) {
 		RNG rng(m_rects.front().area());
@@ -463,10 +499,8 @@ public:
 
 		if(m_rects.size() > 1) { /* Minimum 2 points ... */
 			for(int i=0;i<m_rects.size()-1;i++) {
-				Point p0 = Center(m_rects[i]);
-				Point p1 = Center(m_rects[i+1]);                
 				//line(outFrame, p0, p1, Scalar(0, 0, 255), 1);
-				line(outFrame, p0, p1, color, 1);
+				line(outFrame, Center(m_rects[i]), Center(m_rects[i+1]), color, 1);
 				if(drawAll)
 					//rectangle( outFrame, m_rects[i].tl(), m_rects[i].br(), Scalar( 196, 0, 0 ), 2, 8, 0 );
 					//rectangle( outFrame, m_rects[i].tl(), m_rects[i].br(), Scalar( (m_rects[0].x + m_rects[0].y) % 255, 0, 0 ), 1, 8, 0 );
@@ -536,11 +570,11 @@ public:
 	inline unsigned long FrameTick() { return m_lastFrameTick; }
 	inline const Rect & LastRect() { return m_rects.back(); }
 
-	inline const Point & BeginCenterPoint() { return Center(m_rects[0]); }
-	inline const Point & EndCenterPoint() { return Center(m_rects.back()); }
+	inline const Point BeginCenterPoint() { return Center(m_rects[0]); }
+	inline const Point EndCenterPoint() { return Center(m_rects.back()); }
 
-	inline const Point & CurrentCenterPoint() { return Center(m_rects.back()); }
-	const Point & PreviousCenterPoint() {
+	inline const Point CurrentCenterPoint() { return Center(m_rects.back()); }
+	const Point PreviousCenterPoint() {
 		if(m_rects.size() < 2)
 			return std::move(Point(0, 0));
 
@@ -556,7 +590,7 @@ public:
 			dprintf("Velocity distortion %f !!!\n", VectorDistortion());
 			dprintf("\033[0m"); /* Default color */
 		} else if(enableBugTrigger) { 
-			if((m_averageArea < 144 && m_normVelocity > 25) || /* 12 x 12 */
+			if((m_averageArea < 144 && m_normVelocity > 30) || /* 12 x 12 */
 					(m_averageArea < 256 && m_normVelocity > 40) || /* 16 x 16 */
 					(m_averageArea < 324 && m_normVelocity > 50) || /* 18 x 18 */
 					(m_averageArea < 400 && m_normVelocity > 75) || /* 20 x 20 */
@@ -615,11 +649,11 @@ static inline bool TargetSortByTrackedCount(Target & a, Target & b)
 }
 
 static Rect MergeRect(Rect & r1, Rect & r2) {
-	Rect r;
-	r.x = min(r1.x, r2.x);
-	r.y = min(r1.y, r2.y);
-	r.width = r2.x + r2.width - r1.x;
-	r.height = max(r1.y + r1.height, r2.y + r2.height) - r.y;
+    Rect r;
+    r.x = min(r1.x, r2.x);
+    r.y = min(r1.y, r2.y);
+    r.width = max(r1.x + r1.width, r2.x + r2.width) - r.x;
+    r.height = max(r1.y + r1.height, r2.y + r2.height) - r.y;
 	return r;
 }
 
@@ -647,11 +681,20 @@ private:
     }
 
 public:
-	Tracker() : m_width(CAMERA_WIDTH), m_height(CAMERA_HEIGHT), m_lastFrameTick(0), m_horizonHeight(CAMERA_HEIGHT * HORIZON_FRACTION) {}
+	Tracker() : m_width(CAMERA_WIDTH), m_height(CAMERA_HEIGHT), m_lastFrameTick(0), m_horizonHeight(CAMERA_HEIGHT * HORIZON_RATIO) {}
 	Tracker(int width, int height) : Tracker() {
 		m_width = width;
 		m_height = height;
-		m_horizonHeight = height * HORIZON_FRACTION;
+		m_horizonHeight = height * HORIZON_RATIO;
+	}
+
+	void UpdateHorizonRatio(uint16_t horizonRatio) {
+		switch(horizonRatio) {
+			case 20: m_horizonHeight = m_height * 8 / 10;
+				break;
+			case 30: m_horizonHeight = m_height * 7 / 10;
+				break;
+		}
 	}
 
 	void Initialisize(int width, int height) {
@@ -684,7 +727,8 @@ public:
 				}
 			}
 
-			if(r2.x < 0 || r2.x > m_width) {
+			if(t->m_triggerCount > 0 &&
+					(r2.x < 0 || r2.x > m_width)) {
 				dprintf("\033[0;35m"); /* Puple */
 				dprintf("<%u> Out of range target : (%d, %d), samples : %lu\n", t->m_id, t->m_rects.back().tl().x, t->m_rects.back().tl().y, t->m_rects.size());
 				dprintf("\033[0m"); /* Default color */
@@ -694,7 +738,7 @@ public:
 
 			double n0 = 0;
 			if(t->m_vectors.size() > 0) {
-				n0 = cv::norm(r2.tl() - r1.tl()); /* Moving distance of predict target */
+				n0 = cv::norm(Center(r2) - Center(r1)); /* Moving distance of predict target */
 			}
 			
 			for(rr=roiRect.begin();rr!=roiRect.end();++rr) {
@@ -703,9 +747,10 @@ public:
 					rr->area() > (r1.area() * 32)) /* Object and target area difference */
 					continue;
 
-				double n1 = cv::norm(rr->tl() - r1.tl()); /* Distance between object and target */
+                Point rrct = Center(*rr);
+                double n1 = cv::norm(rrct - Center(r1)); /* Distance between object and target */
 
-				if(n1 > 320)
+				if(n1 > MAX_TARGET_TRACKING_DISTANCE)
 					continue; /* Too far */
 #if 0
 				if(t->m_vectors.size() > 1) {
@@ -758,16 +803,16 @@ public:
 						if(n1 < (rr->width + rr->height)) /* Target tracked with Euclidean distance ... */
 							break;
 					} else {
-						if(n1 < (rr->width + rr->height) * 3) /* Target tracked with Euclidean distance ... */
+						if(n1 < (rr->width + rr->height) * 2) /* Target tracked with Euclidean distance ... */
 							break;
 					}
 				} else if(n1 < (n0 * 3) / 2) { /* Target tracked with velocity and Euclidean distance ... */
 					if(rr->y >= m_horizonHeight) {
-						double a = t->CosineAngle(rr->tl());
+						double a = t->CosineAngleCt(rrct);
 						if(a > 0.9659) /* cos(PI/12) */
 							break;
 					} else {
-						//double a = t->CosineAngle(rr->tl());
+						//double a = t->CosineAngleTl(rr->tl());
 						//if(a > 0.8587) /* cos(PI/6) */
 						//    break;
 					}
@@ -782,38 +827,34 @@ public:
 						rr->area() > (r1.area() * 32)) /* Object and target area difference */
 						continue;
 
-					double n1 = cv::norm(rr->tl() - r1.tl()); /* Distance between object and target */
+					Point rrct = Center(*rr);
+					double n1 = cv::norm(rrct - Center(r1)); /* Distance between object and target */
 
-					if(n1 > 320)
+					if(n1 > (MAX_TARGET_TRACKING_DISTANCE/ 2))
 						continue; /* Too far */
 
-					if(n1 > (n0 * 3) / 2)
-						continue; /* Too far */
+                    double a = t->CosineAngleCt(rrct);
+                    double n2 = cv::norm(rrct - Center(r2));
 
-					double a = t->CosineAngle(rr->tl()); /* Cos angle with top left of ROI */
-					double n2 = cv::norm(rr->tl() - r2.tl());
-					/* This number has been tested by various video. Don't touch it !!! */
-					if(a > 0.5 && 
-						n2 < (n0 * 3) / 2) { /* cos(PI/3) */
-						break;
-					}
+                    if(a > 0.5 && /* cos(PI/3) */
+                        n2 < (n0 * 3) / 2) { 
+                        break;
+                    }
 
-					a = t->CosineAngle(rr->br()); /* Cos angle with bottom right of ROI */
-					n2 = cv::norm(rr->br() - r2.br());
-					if(a > 0.5 && 
-						n2 < (n0 * 3) / 2) { /* cos(PI/3) */
-						break;
-					}
+                    if(a > 0.8587 && /* cos(PI/6) */
+                        n1 < (t->m_normVelocity * f * 2)) {
+                        break;
+                    }
 				}
 			}
 
 			if(rr == roiRect.end()) { /* Target missing ... */
 				bool isTargetLost = false;
 				if(t->m_vectors.size() > 1) {
-					uint32_t compensation = (t->TrackedCount() / 10); /* Tracking more frames with more sample */
+					uint32_t compensation = (t->TrackedCount() / 6); /* Tracking more frames with more sample */
 					if(compensation > 5)
 						compensation = 5;
-					if(f > ((MAX_NUM_FRAME_MISSING_TARGET * 3) + compensation)) /* Target still missing for over X frames */
+					if(f > (MAX_NUM_FRAME_MISSING_TARGET + compensation)) /* Target still missing for over X frames */
 						isTargetLost = true;
 				} else { /* new target with zero velocity */
 					if(f > MAX_NUM_FRAME_MISSING_TARGET) 
@@ -1210,10 +1251,10 @@ int gst_rtsp_server_task(int width, int height, int fps)
 	* any launch line works as long as it contains elements named pay%d. Each
 	* element with pay%d names will be a stream */
 	factory = gst_rtsp_media_factory_new ();
-#if 0
+#if 1
 	gst_rtsp_media_factory_set_launch (factory,
 		"appsrc name=mysrc is-live=true ! videoconvert ! \
-omxh265enc control-rate=2 bitrate=4000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
+omxh265enc insert-sps-pps=1 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 #else
 	gst_rtsp_media_factory_set_launch (factory,
 		"appsrc name=mysrc is-live=true ! nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420 ! \
@@ -1310,7 +1351,7 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
 		if(videoOutoutIndex == VIDEO_OUTPUT_MAX_FILES)
 			videoOutoutIndex = 0; /* Loop */
 		/* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
-#if 0
+#if 1
 		snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
@@ -1318,7 +1359,7 @@ omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%
 #else
 		snprintf(gstStr, STR_SIZE, "appsrc ! \
 nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420, framerate=(fraction)%d/1 ! \
-nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ",
+nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! h265parse ! matroskamux ! filesink location=%s/%s%c%03d.mkv ",
 						VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #endif
 #if 0 /* Always start from index 0 */
@@ -1426,7 +1467,7 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 						++videoOutoutIndex;
 					else
 						videoOutoutIndex = 0; /* loop */
-#if 0
+#if 1
 					snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
@@ -1434,7 +1475,7 @@ omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%
 #else
 					snprintf(gstStr, STR_SIZE, "appsrc ! \
 nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420, framerate=(fraction)%d/1 ! \
-nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ",
+nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! h265parse ! matroskamux ! filesink location=%s/%s%c%03d.mkv ",
 						VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #endif
 
@@ -1886,6 +1927,7 @@ private:
 	bool m_isFakeTargetDetection;
 	bool m_isBugTrigger;
 	uint16_t m_relayDebouence;
+	uint16_t m_horizonRatio;
 
 	thread m_udpServerThread;
 	bool m_bUdpServerRun;
@@ -2033,6 +2075,7 @@ public:
 		m_isFakeTargetDetection(false),
 		m_isBugTrigger(false),
 		m_relayDebouence(800),
+		m_horizonRatio(20),
 		m_bUdpServerRun(false),
 		m_srcIp(0), m_srcPort(0),
 		m_bApMulticastSenderRun(false),
@@ -3015,7 +3058,13 @@ public:
 					m_relayDebouence = stoi(s);
 				else
 					cout << "Invalid " << it->first << "=" << s << endl;			
-			}
+			} else if(it->first == "base.horizon.ratio") {
+				string & s = it->second;
+				if(::all_of(s.begin(), s.end(), ::isdigit))
+					m_horizonRatio = stoi(s);
+				else
+					cout << "Invalid " << it->first << "=" << s << endl;			
+			} 	
 		}
 	}
 
@@ -3030,7 +3079,8 @@ video.output.rtsp=yes\n\
 video.output.result=no\n\
 base.mog2.threshold=32\n\
 base.new.target.restriction=no\n\
-base.relay.debouence=800";
+base.relay.debouence=800\n\
+base.horizon.ratio=20";
 
 	void LoadSystemConfig() {
 		char fn[STR_SIZE];
@@ -3122,6 +3172,10 @@ base.relay.debouence=800";
 
 	inline uint16_t RelayDebouence() const {
 		return m_relayDebouence;
+	}
+
+	inline uint16_t HorizonRatio() const {
+		return m_horizonRatio;
 	}
 
 	void RedLed(pinValues onOff) {
@@ -3257,6 +3311,8 @@ void F3xBase::Start()
 		return;
 	}
 
+	tracker.UpdateHorizonRatio(f3xBase.HorizonRatio());
+
 	if(f3xBase.IsNewTargetRestriction())
 		tracker.NewTargetRestriction(Rect(180, camera.Height() - 180, 360, 180));
 	else
@@ -3319,14 +3375,35 @@ static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect>
 	vector< vector<Point> > contours;
 	vector< Vec4i > hierarchy;
 	findContours(foregroundFrame, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-	vector<Rect> boundRect( contours.size() );    
 #if 1 /* Anti exposure burst */   
 	if(contours.size() > 64)
 		return;
 #endif
-	for(int i=0; i<contours.size(); i++) {
-		boundRect[i] = boundingRect( Mat(contours[i]) );
-	}
+	vector<Rect> boundRect;
+
+    for(int i=0; i<contours.size(); i++) {
+        Rect r = boundingRect(Mat(contours[i]));
+        if(r.area() < 400 && r.br().y > tracker.HorizonHeight()) {
+	        Point ct = Center(r);
+	        bool isMerged = false;
+	        for(auto it=boundRect.begin();it!=boundRect.end();++it) {
+				if(it->area() < 400) { /* Less than 20x20 */
+	                if((r & *it).area() > 0) { /* Merge overlaped rect */
+	                    isMerged = true;
+	                } else if(cv::norm(ct - Center(*it)) < 36) { /* Merge closely enough rect */
+	                    isMerged = true;
+	                }
+	            }
+	            if(isMerged) {
+	                *it = MergeRect(r, *it);
+	                break;
+	            }
+	        }
+	        if(isMerged)
+	            continue;
+	    }
+        boundRect.push_back(r);
+    }
 
 	sort(boundRect.begin(), boundRect.end(), [](const Rect & r1, const Rect & r2) {  
 			return (r1.area() > r2.area()); /* Area */
@@ -3341,13 +3418,13 @@ static void contour_moving_object(Mat & frame, Mat & foregroundFrame, list<Rect>
 			boundRect[i].height < minTargetSize.height)
 			break; /* Rest are small objects, ignore them */
 
+		Mat roiFrame = frame(boundRect[i]);
 #if 1 /* Anti cloud ... */
 		double minVal; 
 		double maxVal; 
 		Point minLoc; 
 		Point maxLoc;
 
-		Mat roiFrame = frame(boundRect[i]);
 		minMaxLoc(roiFrame, &minVal, &maxVal, &minLoc, &maxLoc ); 
 			/* If difference of max and min value of ROI rect is too small then it could be noise such as cloud or sea */
 		if((maxVal - minVal) < 16)
@@ -3555,7 +3632,7 @@ int main(int argc, char**argv)
 					writeText( outFrame, "New Target Restriction Area", Point(120, CAMERA_HEIGHT - 180));
 				}
 				//line(outFrame, Point(0, (camera.Height() / 5) * 4), Point(camera.Width(), (camera.Height() / 5) * 4), Scalar(127, 127, 0), 1);
-				line(outFrame, Point(0, tracker.HorizonHeight()), Point(camera.Width(), tracker.HorizonHeight()), Scalar(127, 127, 0), 1);
+				line(outFrame, Point(0, tracker.HorizonHeight()), Point(camera.Width(), tracker.HorizonHeight()), Scalar(0, 255, 255), 1);
 /*
 				int viewAngle = 60;
 				int yOffset = 0;
@@ -3665,12 +3742,10 @@ int main(int argc, char**argv)
 				writeText(outFrame, to_string(f3xBase.Pitch()), Point( xOffset + 120, yOffset + 40 ));
 				writeText(outFrame, to_string(f3xBase.Yaw()), Point( xOffset + 240, yOffset + 40 ));
 */
-				int xOffset = 200;
-				int yOffset = 200;
 				snprintf(str, 32, "MOG2 threshold %d", f3xBase.Mog2Threshold());
-				writeText(outFrame, str, Point( xOffset, yOffset ));
+				writeText(outFrame, str, Point( 40, 240 ));
 				snprintf(str, 32, "Exposure threshold %d", camera.ExposureThreshold());
-				writeText(outFrame, str, Point( xOffset, yOffset + 40 ));
+				writeText(outFrame, str, Point( 40, 280 ));
 
 				videoOutputQueue.push(outFrame.clone());
 			} else
