@@ -2093,6 +2093,8 @@ public:
 				cout << endl;
 				if(line.find("NVIDIA Jetson Nano Developer Kit") != string::npos) {
 					m_jetsonDevice = JETSON_NANO;
+				} else if(line.find("NVIDIA Jetson Nano 2GB Developer Kit") != string::npos) {
+					m_jetsonDevice = JETSON_NANO;
 				} else if(line.find("NVIDIA Jetson Xavier NX Developer Kit") != string::npos) {
 					m_jetsonDevice = JETSON_XAVIER_NX;
 				}
