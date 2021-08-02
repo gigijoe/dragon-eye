@@ -76,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.6m"
+#define VERSION "v0.1.7"
 
 //#define CAMERA_1080P
 
@@ -112,6 +112,7 @@ using std::chrono::seconds;
 #define VIDEO_OUTPUT_FILE_NAME       	"base"
 #define VIDEO_FILE_OUTPUT_DURATION   	90     /* Video file duration 90 secends */
 #define VIDEO_OUTPUT_MAX_FILES       	400    /* Needs about 30G bytes disk space */
+//#define VIDEO_OMXH265ENC
 
 #define STR_SIZE                     	1024
 #define CONFIG_FILE_DIR              	"/etc/dragon-eye"
@@ -995,7 +996,7 @@ void FrameQueue::cancel()
 
 void FrameQueue::push(cv::Mat const & image)
 {
-	while(matQueue.size() >= 3) { /* Prevent memory overflow ... */
+	while(matQueue.size() >= 6) { /* Prevent memory overflow ... */
 		printf("Video Frame droped !!!\n");
 		return; /* Drop frame */
 	}
@@ -1251,13 +1252,14 @@ int gst_rtsp_server_task(int width, int height, int fps)
 	* any launch line works as long as it contains elements named pay%d. Each
 	* element with pay%d names will be a stream */
 	factory = gst_rtsp_media_factory_new ();
-#if 1
+#ifdef VIDEO_OMXH265ENC
 	gst_rtsp_media_factory_set_launch (factory,
 		"appsrc name=mysrc is-live=true ! videoconvert ! \
 omxh265enc insert-sps-pps=1 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 #else
 	gst_rtsp_media_factory_set_launch (factory,
-		"appsrc name=mysrc is-live=true ! nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420 ! \
+		"appsrc name=mysrc is-live=true ! videoconvert ! video/x-raw, format=(string)BGRx ! \
+nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420 ! \
 nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 //nvv4l2h265enc maxperf-enable=1 iframeinterval=10 bitrate=8000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 #endif
@@ -1340,7 +1342,11 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
 	if(isVideoOutputFile) {       
 		char filePath[64];
 		while(videoOutoutIndex < VIDEO_OUTPUT_MAX_FILES) {
+#ifdef VIDEO_OMXH265ENC
 			snprintf(filePath, 64, "%s/%s%c%03d.mkv", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+#else
+			snprintf(filePath, 64, "%s/%s%c%03d.mp4", VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
+#endif
 			FILE *fp = fopen(filePath, "rb");
 			if(fp) { /* file exist ... */
 				fclose(fp);
@@ -1351,31 +1357,25 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
 		if(videoOutoutIndex == VIDEO_OUTPUT_MAX_FILES)
 			videoOutoutIndex = 0; /* Loop */
 		/* Countclockwise rote 90 degree - nvvidconv flip-method=1 */
-#if 1
+#ifdef VIDEO_OMXH265ENC
 		snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
+omxh265enc preset-level=3 bitrate=8000000 ! h265parse ! qtmux ! filesink location=%s/%s%c%03d.mkv ", 
 			VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #else
-		snprintf(gstStr, STR_SIZE, "appsrc ! \
-nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420, framerate=(fraction)%d/1 ! \
-nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! h265parse ! matroskamux ! filesink location=%s/%s%c%03d.mkv ",
-						VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
-#endif
-#if 0 /* Always start from index 0 */
-		/* 90 secs duration, maximum 100 files */
 		snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
-				   videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-				   nvvidconv flip-method=1 ! omxh265enc preset-level=3 bitrate=8000000 ! \
-				   splitmuxsink muxer=matroskamux sink=filesink location=%s/%s%c%%03d.mkv max-size-time=90000000000 max-files=100 async-finalize=true async-handling=true ", 
-			VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B');
+videoconvert ! video/x-raw, format=(string)BGRx ! \
+nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420, framerate=(fraction)%d/1 ! \
+nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! h265parse ! qtmux ! filesink location=%s/%s%c%03d.mp4 ",
+						VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #endif
 #if 0 /* NOT work, due to tee */
 		snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
-videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! \
+videoconvert ! video/x-raw, format=(string)BGRx ! \
+nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420, framerate=(fraction)%d/1 ! \
+nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! \
 tee name=t \
-t. ! queue ! matroskamux ! filesink location=%s/%s%c%03d.mkv  \
+t. ! queue ! h265parse ! qtmux ! filesink location=%s/%s%c%03d.mkv  \
 t. ! queue ! video/x-h265, stream-format=byte-stream ! h265parse ! rtph265pay mtu=1400 ! \
 udpsink host=224.1.1.1 port=5000 auto-multicast=true sync=false async=false ",
 			VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
@@ -1400,17 +1400,17 @@ nvoverlaysink sync=false ", VIDEO_OUTPUT_FPS);
 	}
 
 	if(isVideoOutputRTP && rtpRemoteHost) {
-#undef MULTICAST_RTP
-#ifdef MULTICAST_RTP /* Multicast RTP does NOT work with wifi due to low speed ... */
-		snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
-videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=1 ! omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
-h265parse ! rtph265pay mtu=1400 ! udpsink host=224.1.1.1 port=%u auto-multicast=true sync=false async=false ",
-			VIDEO_OUTPUT_FPS, rtpRemotePort);
-#else
+#ifdef VIDEO_OMXH265ENC
 		snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-omxh265enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
+omxh264enc control-rate=2 bitrate=4000000 ! video/x-h265, stream-format=byte-stream ! \
+h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=%u sync=false async=false ",
+			VIDEO_OUTPUT_FPS, rtpRemoteHost, rtpRemotePort);
+#else
+		snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
+videoconvert ! video/x-raw, format=(string)BGRx ! \
+nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420, framerate=(fraction)%d/1 ! \
+nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! video/x-h265, stream-format=byte-stream ! \
 h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=%u sync=false async=false ",
 			VIDEO_OUTPUT_FPS, rtpRemoteHost, rtpRemotePort);
 #endif
@@ -1422,10 +1422,18 @@ h265parse ! rtph265pay mtu=1400 config-interval=10 pt=96 ! udpsink host=%s port=
 	}
 
 	if(isVideoOutputHLS) {
+#ifdef VIDEO_OMXH265ENC
 		snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
 omxh264enc control-rate=2 bitrate=4000000 ! h264parse ! mpegtsmux ! \
 hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts target-duration=1 max-files=10 ", VIDEO_OUTPUT_FPS);
+#else
+		snprintf(gstStr, STR_SIZE, "appsrc is-live=true ! video/x-raw, format=(string)BGR ! \
+videoconvert ! video/x-raw, format=(string)BGRx ! \
+nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420, framerate=(fraction)%d/1 ! \
+nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! h264parse ! mpegtsmux ! \
+hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts target-duration=1 max-files=10 ", VIDEO_OUTPUT_FPS);
+#endif
 		outHLS.open(gstStr, VideoWriter::fourcc('X', '2', '6', '4'), VIDEO_OUTPUT_FPS, Size(width, height));
 		cout << endl;
 		cout << gstStr << endl;
@@ -1467,15 +1475,16 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 						++videoOutoutIndex;
 					else
 						videoOutoutIndex = 0; /* loop */
-#if 1
+#ifdef VIDEO_OMXH265ENC
 					snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
 videoconvert ! video/x-raw, format=(string)I420, framerate=(fraction)%d/1 ! \
-omxh265enc preset-level=3 bitrate=8000000 ! matroskamux ! filesink location=%s/%s%c%03d.mkv ", 
+omxh265enc preset-level=3 bitrate=8000000 ! h265parse ! qtmux ! filesink location=%s/%s%c%03d.mkv ", 
 						VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #else
-					snprintf(gstStr, STR_SIZE, "appsrc ! \
+		snprintf(gstStr, STR_SIZE, "appsrc ! video/x-raw, format=(string)BGR ! \
+videoconvert ! video/x-raw, format=(string)BGRx ! \
 nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420, framerate=(fraction)%d/1 ! \
-nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! h265parse ! matroskamux ! filesink location=%s/%s%c%03d.mkv ",
+nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! h265parse ! qtmux ! filesink location=%s/%s%c%03d.mp4 ",
 						VIDEO_OUTPUT_FPS, VIDEO_OUTPUT_DIR, VIDEO_OUTPUT_FILE_NAME, (baseType == BASE_A) ? 'A' : 'B', videoOutoutIndex);
 #endif
 
