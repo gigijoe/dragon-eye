@@ -1070,7 +1070,8 @@ static void
 need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 {
 	GstBuffer *buffer;
-	uint64_t size = ctx->videoProperties.width * ctx->videoProperties.height * 4; // Image size * deth of BGRx;
+//	uint64_t size = ctx->videoProperties.width * ctx->videoProperties.height * 4; // Image size * deth of BGRx;
+	uint64_t size = ctx->videoProperties.width * ctx->videoProperties.height * 3; // Image size * deth of BGR;
 	GstFlowReturn ret;
 
 	if(ctx->buffer == 0) {
@@ -1086,6 +1087,7 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 	raw = (gint8 *)map.data;
 
 	const Mat & lastFrame = videoOutputQueue.front();
+/*
 #if 0
 	for (int i=0;i<ctx->videoProperties.height;i++) {
 		const Vec3b* ptr = lastFrame.ptr<Vec3b>(i);
@@ -1109,6 +1111,8 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 		}
 	}
 #endif
+*/
+	memcpy(raw, lastFrame.data, size);
 	videoOutputQueue.pop();
 
 	gst_buffer_unmap (buffer, &map);
@@ -1151,7 +1155,7 @@ media_configure (GstRTSPMediaFactory * factory, GstRTSPMedia * media, gpointer u
 	/* configure the caps of the video */
 	g_object_set (G_OBJECT (appsrc), "caps",
 	gst_caps_new_simple ("video/x-raw",
-				"format", G_TYPE_STRING, "BGRx",
+				"format", G_TYPE_STRING, "BGR",
 				"width", G_TYPE_INT, vp->width,
 				"height", G_TYPE_INT, vp->height,
 				"framerate", GST_TYPE_FRACTION, vp->fps, 1, NULL), NULL);
@@ -1254,11 +1258,11 @@ int gst_rtsp_server_task(int width, int height, int fps)
 	factory = gst_rtsp_media_factory_new ();
 #ifdef VIDEO_OMXH265ENC
 	gst_rtsp_media_factory_set_launch (factory,
-		"appsrc name=mysrc is-live=true ! videoconvert ! \
+		"appsrc name=mysrc is-live=true ! video/x-raw, format=(string)BGR ! videoconvert ! \
 omxh265enc insert-sps-pps=1 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 #else
 	gst_rtsp_media_factory_set_launch (factory,
-		"appsrc name=mysrc is-live=true ! videoconvert ! video/x-raw, format=(string)BGRx ! \
+		"appsrc name=mysrc is-live=true ! video/x-raw, format=(string)BGR ! videoconvert ! video/x-raw, format=(string)BGRx ! \
 nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420 ! \
 nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 //nvv4l2h265enc maxperf-enable=1 iframeinterval=10 bitrate=8000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
