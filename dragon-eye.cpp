@@ -1640,11 +1640,19 @@ video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, fr
 nvvidconv flip-method=3 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
 		m_height, m_width, CAMERA_FPS);
 #else
-		snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%f ee-mode=%d ee-strength=%f gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%f ! \
+		if(sensor_id < 2) {
+			snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%f ee-mode=%d ee-strength=%f gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%f ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
 nvvidconv flip-method=3 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
-			sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
-			m_height, m_width, m_fps);
+				sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
+				m_height, m_width, m_fps);
+		} else { /* USB camera - MJPG */
+			snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video%d io-mode=2 ! image/jpeg, width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! \
+nvv4l2decoder mjpeg=1 ! \
+nvvidconv flip-method=3 ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true", 
+				sensor_id, 
+				m_height, m_width, m_fps);			
+		}
 #endif
 
 #if 0 /* tee works */
@@ -1654,13 +1662,6 @@ tee name=t \
 t. ! nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! h265parse ! rtph265pay mtu=1400 ! udpsink host=127.0.0.1 port=5009 sync=false async=false \
 t. ! nvvidconv flip-method=3 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
 			sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
-			m_height, m_width, m_fps);
-#endif
-
-#if 0 /* USB camera - MJPG */
-		snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video2 io-mode=2 ! image/jpeg, width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! \
-nvv4l2decoder mjpeg=1 ! \
-nvvidconv flip-method=3 ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true", 
 			m_height, m_width, m_fps);
 #endif
 		cout << endl;
@@ -2548,6 +2549,7 @@ public:
 				} else if(line == "#Stop") {
 					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(stopped), strlen(stopped));
 					evtQueue.push(EvtStop);
+					s_errorString.clear();
 				} else if(line == "#Status") {
 					if(s_errorString.size() > 0) {
 						string raw("#Error:");
