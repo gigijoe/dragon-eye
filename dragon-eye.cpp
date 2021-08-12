@@ -76,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.7"
+#define VERSION "v0.1.7a"
 
 //#define CAMERA_1080P
 
@@ -994,6 +994,7 @@ void FrameQueue::cancel()
 	condEvent.notify_all();
 }
 
+#if 0
 void FrameQueue::push(cv::Mat const & image)
 {
 	while(matQueue.size() >= 6) { /* Prevent memory overflow ... */
@@ -1005,6 +1006,20 @@ void FrameQueue::push(cv::Mat const & image)
 	matQueue.push(image);
 	condEvent.notify_all();
 }
+#else
+void FrameQueue::push(cv::Mat const & image)
+{
+	std::unique_lock<std::mutex> mlock(matMutex);
+
+	while(matQueue.size() >= 6) { /* Prevent memory overflow ... */
+		printf("Video Frame droped !!!\n");
+		matQueue.pop();
+	}
+
+	matQueue.push(image);
+	condEvent.notify_all();
+}
+#endif
 
 void FrameQueue::pop()
 {
@@ -1039,6 +1054,7 @@ const Mat & FrameQueue::front()
 
 void FrameQueue::reset()
 {
+	matQueue = std::queue<cv::Mat>();
 	isCancelled = false;
 }
 
@@ -1047,6 +1063,7 @@ void FrameQueue::reset()
 */
 
 static FrameQueue videoOutputQueue;
+static FrameQueue videoRtspQueue;
 
 /*
 *
@@ -1086,7 +1103,7 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 	gst_buffer_map (buffer, &map, GST_MAP_WRITE); // make buffer writable
 	raw = (gint8 *)map.data;
 
-	const Mat & lastFrame = videoOutputQueue.front();
+	const Mat & lastFrame = videoRtspQueue.front();
 /*
 #if 0
 	for (int i=0;i<ctx->videoProperties.height;i++) {
@@ -1113,7 +1130,7 @@ need_data (GstElement * appsrc, guint unused, RtspServerContext *ctx)
 #endif
 */
 	memcpy(raw, lastFrame.data, size);
-	videoOutputQueue.pop();
+	videoRtspQueue.pop();
 
 	gst_buffer_unmap (buffer, &map);
 
@@ -1284,6 +1301,8 @@ nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! rtph265pay mtu=1400 name=pay0 p
 
 	g_signal_connect(s_server, "client-connected", reinterpret_cast<GCallback>(clientConnected), nullptr);
 
+	videoRtspQueue.reset();   
+
 	/* start serving */
 	g_print ("stream ready at rtsp://127.0.0.1:8554/test\n");
 	g_main_loop_run (loop);
@@ -1299,6 +1318,8 @@ nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! rtph265pay mtu=1400 name=pay0 p
 	s_server = 0;
 	if(G_IS_OBJECT(loop))
 		g_object_unref(loop);
+
+	videoRtspQueue.cancel();
 
 	return 0;
 }
@@ -1330,7 +1351,7 @@ static thread rtspServerThread;
 
 void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideoOutputFile, 
 	bool isVideoOutputRTP, const char *rtpRemoteHost, uint16_t rtpRemotePort, 
-	bool isVideoOutputHLS, bool isVideoOutputRTSP, int width, int height, int fps)
+	bool isVideoOutputHLS, int width, int height, int fps)
 {    
 	Size videoSize = Size((int)width,(int)height);
 	char gstStr[STR_SIZE];
@@ -1445,12 +1466,6 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 		cout << "*** Start HLS video ***" << endl;        
 	}
 
-	if(isVideoOutputRTSP) {
-		rtspServerThread = thread(&gst_rtsp_server_task, width, height, fps);
-		cout << endl;
-		cout << "*** Start RTSP video ***" << endl;        
-	}
-
 	videoOutputQueue.reset();
 
 	steady_clock::time_point t1 = steady_clock::now();
@@ -1460,8 +1475,7 @@ hlssink playlist-location=/tmp/playlist.m3u8 location=/tmp/segment%%05d.ts targe
 			if(bShutdown)
 				break;
 
-			Mat frame = videoOutputQueue.front(); /* Copy frame to avoid frame queue overflow */
-			videoOutputQueue.pop();
+			const Mat & frame = videoOutputQueue.front(); /* Copy frame to avoid frame queue overflow */
 
 			if(isVideoOutputFile) {
 				if(outFile.isOpened())
@@ -1508,6 +1522,8 @@ nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! h265parse ! qtmux ! filesink lo
 				outRTP.write(frame);
 			if(isVideoOutputHLS)
 				outHLS.write(frame);
+
+			videoOutputQueue.pop();
 		}
 	} catch (FrameQueue::cancelled & /*e*/) {
 		if(isVideoOutputFile) {
@@ -1529,13 +1545,6 @@ nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! h265parse ! qtmux ! filesink lo
 			cout << endl;
 			cout << "*** Stop HLS video ***" << endl;
 			outHLS.release();
-		}
-		if(isVideoOutputRTSP) {
-			cout << endl;
-			cout << "*** Stop RTSP video ***" << endl;
-			kill(getpid(), SIGUSR1);
-			if(rtspServerThread.joinable())
-				rtspServerThread.join();
 		}
 	}    
 }
@@ -3170,12 +3179,12 @@ base.horizon.ratio=20";
 		return m_isVideoOutputHLS;
 	}
 
-	inline bool IsVideoOutputRTSP() const {
-		return m_isVideoOutputRTSP;
+	inline bool IsVideoOutput() const {
+		return (m_isVideoOutputScreen || m_isVideoOutputFile || m_isVideoOutputRTP || m_isVideoOutputHLS);
 	}
 
-	inline bool IsVideoOutput() const {
-		return (m_isVideoOutputScreen || m_isVideoOutputFile || m_isVideoOutputRTP || m_isVideoOutputHLS || m_isVideoOutputRTSP);
+	inline bool IsVideoOutputRTSP() const {
+		return m_isVideoOutputRTSP;
 	}
 
 	inline bool IsVideoOutputResult() const {
@@ -3361,11 +3370,17 @@ void F3xBase::Start()
 	for(int i=0;i<30;i++) /* Read out unstable frames ... */
 		camera.Read(frame);
 
-	if(f3xBase.IsVideoOutput()) {
+	if(f3xBase.IsVideoOutput()) { /* NOT include RTSP video output */
 		F3xBase & fb = f3xBase;
 		videoOutputThread = thread(&VideoOutputTask, fb.BaseType(), fb.IsVideoOutputScreen(), fb.IsVideoOutputFile(), 
 			fb.IsVideoOutputRTP(), fb.RtpRemoteHost(), fb.RtpRemotePort(), 
-			fb.IsVideoOutputHLS(), fb.IsVideoOutputRTSP(), camera.Width(), camera.Height(), camera.Fps());
+			fb.IsVideoOutputHLS(), camera.Width(), camera.Height(), camera.Fps());
+	}
+
+	if(f3xBase.IsVideoOutputRTSP()) {
+		rtspServerThread = thread(&gst_rtsp_server_task, camera.Width(), camera.Height(), camera.Fps());
+		cout << endl;
+		cout << "*** Start RTSP video ***" << endl;
 	}
 
 	f3xBase.GreenLed(off);
@@ -3381,11 +3396,19 @@ void F3xBase::Stop()
 	cout << "*** Object tracking stoped ***" << endl;
 	
 	if(f3xBase.IsVideoOutput()) {
-		if(f3xBase.IsVideoOutputRTSP())
-			gst_rtsp_server_close_clients();
 		videoOutputQueue.cancel();
 		if(videoOutputThread.joinable())
 			videoOutputThread.join();
+	}
+
+	if(f3xBase.IsVideoOutputRTSP()) {
+		if(f3xBase.IsVideoOutputRTSP())
+			gst_rtsp_server_close_clients();
+		cout << endl;
+		cout << "*** Stop RTSP video ***" << endl;
+		kill(getpid(), SIGUSR1);
+		if(rtspServerThread.joinable())
+			rtspServerThread.join();
 	}
 
 	camera.Close();
@@ -3630,7 +3653,7 @@ int main(int argc, char**argv)
 
 		Mat outFrame;
 		if(f3xBase.IsVideoOutputResult()) {
-			if(f3xBase.IsVideoOutput()) {
+			if(f3xBase.IsVideoOutput() || f3xBase.IsVideoOutputRTSP()) {
 				capFrame.copyTo(outFrame);
 				line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 255, 0), 1);
 			}
@@ -3651,7 +3674,7 @@ int main(int argc, char**argv)
 		extract_moving_object(grayFrame, roiRect);
 
 		if(f3xBase.IsVideoOutputResult()) {
-			if(f3xBase.IsVideoOutput()) {
+			if(f3xBase.IsVideoOutput() || f3xBase.IsVideoOutputRTSP()) {
 				for(list<Rect>::iterator rr=roiRect.begin();rr!=roiRect.end();++rr)
 					rectangle( outFrame, rr->tl(), rr->br(), Scalar(0, 255, 0), 2, 8, 0 );
 				if(f3xBase.IsNewTargetRestriction()) {
@@ -3691,7 +3714,7 @@ int main(int argc, char**argv)
 
 		list< Target > & targets = tracker.TargetList();
 
-		if(f3xBase.IsVideoOutput()) {
+		if(f3xBase.IsVideoOutput() || f3xBase.IsVideoOutputRTSP()) {
 			if(f3xBase.IsVideoOutputResult()) {
 				list< list< Rect > > & newTargetHistory = tracker.NewTargetHistory();
 				for(auto & it : newTargetHistory) {
@@ -3706,7 +3729,7 @@ int main(int argc, char**argv)
 
 		for(list< Target >::iterator t=targets.begin();t!=targets.end();++t) {
 			if(f3xBase.IsVideoOutputResult()) { 
-				if(f3xBase.IsVideoOutput()) {
+				if(f3xBase.IsVideoOutput() || f3xBase.IsVideoOutputRTSP()) {
 					t->Draw(outFrame, true); /* Draw target */
 				}
 			}
@@ -3730,7 +3753,7 @@ int main(int argc, char**argv)
 
 		if(doTrigger) { /* t->TriggerCount() > 0 */
 			if(f3xBase.IsVideoOutputResult()) {
-				if(f3xBase.IsVideoOutput())
+				if(f3xBase.IsVideoOutput() || f3xBase.IsVideoOutputRTSP())
 					line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
 			}
 
@@ -3751,7 +3774,7 @@ int main(int argc, char**argv)
 			f3xBase.RedLed(on);
 		}         
 
-		if(f3xBase.IsVideoOutput()) {
+		if(f3xBase.IsVideoOutput() || f3xBase.IsVideoOutputRTSP()) {
 			if(f3xBase.IsVideoOutputResult()) {
 				writeText(outFrame, currentDateTime(), Point(40, 160));
 				char str[32];
@@ -3775,9 +3798,16 @@ int main(int argc, char**argv)
 				snprintf(str, 32, "Exposure threshold %d", camera.ExposureThreshold());
 				writeText(outFrame, str, Point( 40, 280 ));
 
-				videoOutputQueue.push(outFrame.clone());
-			} else
-				videoOutputQueue.push(capFrame.clone());
+				if(f3xBase.IsVideoOutput())
+					videoOutputQueue.push(outFrame.clone());
+				if(f3xBase.IsVideoOutputRTSP() && g_clientCount.load() > 0)
+					videoRtspQueue.push(outFrame.clone());
+			} else {
+				if(f3xBase.IsVideoOutput())
+					videoOutputQueue.push(capFrame.clone());
+				if(f3xBase.IsVideoOutputRTSP() && g_clientCount.load() > 0)
+					videoRtspQueue.push(capFrame.clone());
+			}
 		}
 
 		steady_clock::time_point t2(steady_clock::now());
@@ -3798,13 +3828,8 @@ int main(int argc, char**argv)
 	f3xBase.RedLed(off); /* While object detected */
 	f3xBase.Relay(off);
 
-	if(f3xBase.IsVideoOutput()) {
-		if(f3xBase.IsVideoOutputRTSP())
-			gst_rtsp_server_close_clients();
-		videoOutputQueue.cancel();
-		if(videoOutputThread.joinable())
-			videoOutputThread.join();
-	}
+	if(bStopped == false)
+		F3xBase::Stop();
 
 	f3xBase.StopEthMulticastSender();
 	f3xBase.StopStaMulticastSender();
@@ -3812,8 +3837,6 @@ int main(int argc, char**argv)
 	f3xBase.StopUdpServer();
 	f3xBase.CloseTtyUSB0();
 	f3xBase.CloseTtyJy901s();
-
-	camera.Close();
 
 	cout << endl;
 	cout << "Finished ..." << endl;
