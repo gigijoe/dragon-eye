@@ -76,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.7a"
+#define VERSION "v0.1.7b"
 
 //#define CAMERA_1080P
 
@@ -1054,6 +1054,8 @@ const Mat & FrameQueue::front()
 
 void FrameQueue::reset()
 {
+	std::unique_lock<std::mutex> mlock(matMutex);
+
 	matQueue = std::queue<cv::Mat>();
 	isCancelled = false;
 }
@@ -1978,8 +1980,6 @@ private:
 	thread m_ethMulticastSenderThread;
 	bool m_bEthMulticastSenderRun;
 
-	std::queue<uint8_t> m_triggerQueue;
-	thread m_triggerTtyUSB0Thread;
 	thread m_jy901sThread;
 
 	int m_roll, m_pitch, m_yaw;
@@ -2023,19 +2023,6 @@ private:
 			return -1;
 		}
 		return 0;
-	}
-
-	void TriggerTtyUSB0Task() {
-		while(m_ttyUSB0Fd > 0) {
-			if(bShutdown)
-				break;
-			if(m_triggerQueue.size() > 0) {
-				auto data = m_triggerQueue.front();
-				m_triggerQueue.pop();
-				write(m_ttyUSB0Fd, &data, sizeof(data));
-			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-		}
 	}
 
 	void Jy901sTask() {
@@ -2196,11 +2183,7 @@ public:
 
 	int OpenTtyUSB0() {
 		const char *ttyUSB0 = "/dev/ttyUSB0";
- 
 		m_ttyUSB0Fd = OpenTty(ttyUSB0, B9600, 0);
-
-		if(m_ttyUSB0Fd > 0)
-			m_triggerTtyUSB0Thread = thread(&F3xBase::TriggerTtyUSB0Task, this);
 
 		return m_ttyUSB0Fd;
 	}
@@ -2244,8 +2227,7 @@ public:
 
 	void TriggerTtyUSB0(bool newTrigger) {
 		static uint8_t serNo = 0x3f;
-		uint8_t data;
-
+		
 		if(m_ttyUSB0Fd <= 0)
 			return;
 
@@ -2253,24 +2235,36 @@ public:
 			if(++serNo > 0x3f)
 				serNo = 0;
 		}
-
+#if 0
+		uint8_t data = 0x0;
 		if(m_baseType == BASE_A) {
 			data = (serNo & 0x3f);
 			printf("TriggerTtyUSB0 : BASE_A[%d]\r\n", serNo);
 		} else if(m_baseType == BASE_B) {
 			data = (serNo & 0x3f) | 0x40;
 			printf("TriggerTtyUSB0 : BASE_B[%d]\r\n", serNo);
-		}        
-		m_triggerQueue.push(data);
+		}
+		write(m_ttyUSB0Fd, reinterpret_cast<const uint8_t *>(&data), 1);
+#else
+		char raw[16] = {0};
+		switch(m_baseType) {
+			case BASE_A: snprintf(raw, 16, "<A%04d>", serNo);
+				printf("TriggerTtyUSB0 : %s\r\n", raw);
+				break;
+			case BASE_B: snprintf(raw, 16, "<B%04d>", serNo);
+				printf("TriggerTtyUSB0 : %s\r\n", raw);
+				break;
+			default:
+				break;
+		}
+		write(m_ttyUSB0Fd, reinterpret_cast<const uint8_t *>(raw), strlen(raw));
+#endif
 	}
 
 	void CloseTtyUSB0() {
 		if(m_ttyUSB0Fd > 0)
 			close(m_ttyUSB0Fd);
 		m_ttyUSB0Fd = 0;
-
-		if(m_triggerTtyUSB0Thread.joinable())
-			m_triggerTtyUSB0Thread.join();
 	}
 
 	void CloseTtyJy901s() {
@@ -2444,7 +2438,7 @@ public:
 			case BASE_A: snprintf(raw, 16, "<A%04d>", serNo);
 				printf("TriggerSourceUdpSocket : %s\r\n", raw);
 				break;
-			case BASE_B: snprintf(raw, 16, "<A%04d>", serNo);
+			case BASE_B: snprintf(raw, 16, "<B%04d>", serNo);
 				printf("TriggerSourceUdpSocket : %s\r\n", raw);
 				break;
 			default:
@@ -2801,10 +2795,10 @@ public:
 		string raw;
 		switch(m_baseType) {
 			case BASE_A: raw.append("TRIGGER_A");
-				printf("Multicast - TRIGGER_A:%d\r\n", serNo);
+				printf("TriggerMulticastSocket : TRIGGER_A:%d\r\n", serNo);
 				break;
 			case BASE_B: raw.append("TRIGGER_B");
-				printf("Multicast - TRIGGER_B:%d\r\n", serNo);
+				printf("TriggerMulticastSocket : TRIGGER_B:%d\r\n", serNo);
 				break;
 			default:
 				break;
