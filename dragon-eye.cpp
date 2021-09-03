@@ -1939,7 +1939,9 @@ static int DownloadFirmware(unsigned int ip, unsigned short port, const char *pa
 
 class F3xBase {
 private:
-	int m_ttyUSB0Fd, m_jy901Fd, m_udpSocket, m_apMulticastSocket, m_staMulticastSocket, m_ethMulticastSocket;
+	int m_ttyUSB0Fd, m_jy901Fd, m_ttyTHSxFd;
+	int m_udpSocket, m_apMulticastSocket, m_staMulticastSocket, m_ethMulticastSocket;
+
 	JetsonDevice_t m_jetsonDevice;
 	BaseType_t m_baseType;
 
@@ -2080,8 +2082,9 @@ private:
 	}
 
 public:
-	F3xBase() : m_ttyUSB0Fd(0), m_jy901Fd(0), m_udpSocket(0),
-		m_apMulticastSocket(0), m_staMulticastSocket(0), m_ethMulticastSocket(0), m_jetsonDevice(JETSON_NANO), m_baseType(BASE_A),
+	F3xBase() : m_ttyUSB0Fd(0), m_jy901Fd(0), m_ttyTHSxFd(0),
+		m_udpSocket(0), m_apMulticastSocket(0), m_staMulticastSocket(0), m_ethMulticastSocket(0), 
+		m_jetsonDevice(JETSON_NANO), m_baseType(BASE_A),
 		m_redLED(gpio16), m_greenLED(gpio17), m_blueLED(gpio50), m_relay(gpio51), m_pushButton(gpio18),
 		m_isVideoOutputScreen(false), 
 		m_isVideoOutputFile(false), 
@@ -2187,7 +2190,7 @@ public:
 
 		return m_ttyUSB0Fd;
 	}
-
+	
 	int OpenTtyJy901s() {
 		switch(m_jetsonDevice) {
 			case JETSON_NANO: m_jy901Fd = OpenTty("/dev/ttyTHS1", B9600, 0);
@@ -2200,6 +2203,17 @@ public:
 			m_jy901sThread = thread(&F3xBase::Jy901sTask, this);
 
 		return m_jy901Fd;
+	}
+
+	int OpenTtyTHSx() {
+		switch(m_jetsonDevice) {
+			case JETSON_NANO: m_ttyTHSxFd = OpenTty("/dev/ttyTHS1", B9600, 0);
+				break;
+			case JETSON_XAVIER_NX: m_ttyTHSxFd = OpenTty("/dev/ttyTHS0", B9600, 0);
+				break;
+		}
+
+		return m_ttyTHSxFd;
 	}
 
 	size_t ReadTty(int fd, uint8_t *data, size_t size) {
@@ -2235,17 +2249,7 @@ public:
 			if(++serNo > 0x3f)
 				serNo = 0;
 		}
-#if 0
-		uint8_t data = 0x0;
-		if(m_baseType == BASE_A) {
-			data = (serNo & 0x3f);
-			printf("TriggerTtyUSB0 : BASE_A[%d]\r\n", serNo);
-		} else if(m_baseType == BASE_B) {
-			data = (serNo & 0x3f) | 0x40;
-			printf("TriggerTtyUSB0 : BASE_B[%d]\r\n", serNo);
-		}
-		write(m_ttyUSB0Fd, reinterpret_cast<const uint8_t *>(&data), 1);
-#else
+
 		char raw[16] = {0};
 		switch(m_baseType) {
 			case BASE_A: snprintf(raw, 16, "<A%04d>", serNo);
@@ -2258,7 +2262,31 @@ public:
 				break;
 		}
 		write(m_ttyUSB0Fd, reinterpret_cast<const uint8_t *>(raw), strlen(raw));
-#endif
+	}
+
+	void TriggerTtyTHSx(bool newTrigger) {
+		static uint8_t serNo = 0x3f;
+		
+		if(m_ttyTHSxFd <= 0)
+			return;
+
+		if(newTrigger) { /* It's NEW trigger */
+			if(++serNo > 0x3f)
+				serNo = 0;
+		}
+
+		char raw[16] = {0};
+		switch(m_baseType) {
+			case BASE_A: snprintf(raw, 16, "<A%04d>", serNo);
+				printf("TriggerTtyTHSx : %s\r\n", raw);
+				break;
+			case BASE_B: snprintf(raw, 16, "<B%04d>", serNo);
+				printf("TriggerTtyTHSx : %s\r\n", raw);
+				break;
+			default:
+				break;
+		}
+		write(m_ttyTHSxFd, reinterpret_cast<const uint8_t *>(raw), strlen(raw));
 	}
 
 	void CloseTtyUSB0() {
@@ -2274,6 +2302,12 @@ public:
 
 		if(m_jy901sThread.joinable())
 			m_jy901sThread.join();
+	}
+
+	void CloseTtyTHSx() {
+		if(m_ttyTHSxFd > 0)
+			close(m_ttyTHSxFd);
+		m_ttyTHSxFd = 0;
 	}
 
 	int OpenUdpSocket(uint16_t port) {
@@ -2546,7 +2580,7 @@ public:
 							fclose(fp);
 						}
 					}
-				} else if(line == "#Start") {                    
+				} else if(line == "#Start") {
 					WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(started), strlen(started));
 					evtQueue.push(EvtStart);
 				} else if(line == "#Stop") {
@@ -3548,7 +3582,8 @@ int main(int argc, char**argv)
 	f3xBase.Initialisize();
 	f3xBase.SetupGPIO();
 	f3xBase.OpenTtyUSB0();
-	f3xBase.OpenTtyJy901s();
+	//f3xBase.OpenTtyJy901s();
+	f3xBase.OpenTtyTHSx();
 	f3xBase.LoadSystemConfig();
 	f3xBase.StartUdpServer();
 	f3xBase.StartApMulticastSender();
@@ -3763,6 +3798,7 @@ int main(int argc, char**argv)
 			lastTriggerTime = steady_clock::now();
 
 			f3xBase.TriggerTtyUSB0(isNewTrigger);
+			f3xBase.TriggerTtyTHSx(isNewTrigger);
 			f3xBase.TriggerSourceUdpSocket(isNewTrigger);
 			f3xBase.TriggerMulticastSocket(isNewTrigger);
 			f3xBase.RedLed(on);
@@ -3830,7 +3866,8 @@ int main(int argc, char**argv)
 	f3xBase.StopApMulticastSender();
 	f3xBase.StopUdpServer();
 	f3xBase.CloseTtyUSB0();
-	f3xBase.CloseTtyJy901s();
+	//f3xBase.CloseTtyJy901s();
+	f3xBase.CloseTtyTHSx();
 
 	cout << endl;
 	cout << "Finished ..." << endl;
