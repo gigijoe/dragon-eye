@@ -76,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.7b"
+#define VERSION "v0.1.7c"
 
 //#define CAMERA_1080P
 
@@ -2240,13 +2240,13 @@ public:
 	}
 
 	void TriggerTtyUSB0(bool newTrigger) {
-		static uint8_t serNo = 0x3f;
+		static uint16_t serNo = 0x1fff;
 		
 		if(m_ttyUSB0Fd <= 0)
 			return;
 
 		if(newTrigger) { /* It's NEW trigger */
-			if(++serNo > 0x3f)
+			if(++serNo > 0x1fff)
 				serNo = 0;
 		}
 
@@ -2265,13 +2265,13 @@ public:
 	}
 
 	void TriggerTtyTHSx(bool newTrigger) {
-		static uint8_t serNo = 0x3f;
+		static uint16_t serNo = 0x1fff;
 		
 		if(m_ttyTHSxFd <= 0)
 			return;
 
 		if(newTrigger) { /* It's NEW trigger */
-			if(++serNo > 0x3f)
+			if(++serNo > 0x1fff)
 				serNo = 0;
 		}
 
@@ -2407,26 +2407,7 @@ public:
 		
 		return 0;
 	}
-#if 0
-	size_t WriteUdpSocket(int fd, const uint8_t *data, size_t size) {
-		struct sockaddr_in to;
-		int toLen = sizeof(to);
-		memset(&to, 0, toLen);
-		
-		struct hostent *server;
-		server = gethostbyname(m_udpRemoteHost.c_str());
 
-		to.sin_family = AF_INET;
-		to.sin_port = htons(m_udpRemotePort);
-		to.sin_addr = *((struct in_addr *)server->h_addr);
-		
-		//printf("Write to %s:%u ...\n", m_udpRemoteHost.c_str(), m_udpRemotePort);
-		
-		int s = sendto(fd, data, size, 0,(struct sockaddr*)&to, toLen);
-
-		return s;
-	}
-#endif
 	size_t WriteSourceUdpSocket(const uint8_t *data, size_t size) {
 		if(!m_udpSocket || m_srcIp == 0 || m_srcPort == 0)
 			return 0;
@@ -2445,28 +2426,12 @@ public:
 	}
 
 	void TriggerSourceUdpSocket(bool newTrigger) {
-		static uint8_t serNo = 0x3f;
+		static uint16_t serNo = 0x1fff;
 		if(newTrigger) { /* It's NEW trigger */
-			if(++serNo > 0x3f)
+			if(++serNo > 0x1fff)
 				serNo = 0;
 		}
-#if 0
-		string raw;
-		switch(m_baseType) {
-			case BASE_A: raw.append("TRIGGER_A");
-				printf("UDP - TRIGGER_A:%d\r\n", serNo);
-				break;
-			case BASE_B: raw.append("TRIGGER_B");
-				printf("UDP - TRIGGER_B:%d\r\n", serNo);
-				break;
-			default:
-				break;
-		}
-		raw.push_back(':');
-		raw.append(std::to_string(serNo));
 
-		WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(raw.c_str()), raw.size());
-#else
 		char raw[16] = {0};
 		switch(m_baseType) {
 			case BASE_A: snprintf(raw, 16, "<A%04d>", serNo);
@@ -2479,7 +2444,6 @@ public:
 				break;
 		}
 		WriteSourceUdpSocket(reinterpret_cast<const uint8_t *>(raw), strlen(raw));
-#endif
 	}
 
 	void CloseUdpSocket() {
@@ -2820,32 +2784,30 @@ public:
 	}
 
 	void TriggerMulticastSocket(bool newTrigger) {
-		static uint8_t serNo = 0x3f;
+		static uint16_t serNo = 0x1fff;
 		if(newTrigger) { /* It's NEW trigger */
-			if(++serNo > 0x3f)
+			if(++serNo > 0x1fff)
 				serNo = 0;
 		}
 
-		string raw;
+		char raw[16] = {0};
 		switch(m_baseType) {
-			case BASE_A: raw.append("TRIGGER_A");
-				printf("TriggerMulticastSocket : TRIGGER_A:%d\r\n", serNo);
+			case BASE_A: snprintf(raw, 16, "<A%04d>", serNo);
+				printf("TriggerMulticastSocket : %s\r\n", raw);
 				break;
-			case BASE_B: raw.append("TRIGGER_B");
-				printf("TriggerMulticastSocket : TRIGGER_B:%d\r\n", serNo);
+			case BASE_B: snprintf(raw, 16, "<B%04d>", serNo);
+				printf("TriggerMulticastSocket : %s\r\n", raw);
 				break;
 			default:
 				break;
 		}
-		raw.push_back(':');
-		raw.append(std::to_string(serNo));
 
 		if(m_apMulticastSocket)
-			WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
+			WriteMulticastSocket(m_apMulticastSocket, "224.0.0.2", 9002, WLAN_AP, reinterpret_cast<const uint8_t *>(raw), strlen(raw));
 		if(m_staMulticastSocket)
-			WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
+			WriteMulticastSocket(m_staMulticastSocket, "224.0.0.3", 9003, WLAN_STA, reinterpret_cast<const uint8_t *>(raw), strlen(raw));
 		if(m_ethMulticastSocket)
-			WriteMulticastSocket(m_ethMulticastSocket, "224.0.0.3", 9003, LAN_ETH, reinterpret_cast<const uint8_t *>(raw.c_str()), raw.length());
+			WriteMulticastSocket(m_ethMulticastSocket, "224.0.0.3", 9003, LAN_ETH, reinterpret_cast<const uint8_t *>(raw), strlen(raw));
 	}
 
 	string MulticastRaw(string & ip) {
@@ -3011,7 +2973,7 @@ public:
 					close(m_ethMulticastSocket);
 					m_ethMulticastSocket = 0;
 				}
-			} else { /* Wifi disconnected ... */
+			} else { /* Ethernet disconnected ... */
 				m_ethMulticastSocket = OpenMulticastSocket("224.0.0.3", 9003, LAN_ETH);
 				if(m_ethMulticastSocket == 0) {
 					std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -3797,10 +3759,10 @@ int main(int argc, char**argv)
 
 			lastTriggerTime = steady_clock::now();
 
-			f3xBase.TriggerTtyUSB0(isNewTrigger);
-			f3xBase.TriggerTtyTHSx(isNewTrigger);
-			f3xBase.TriggerSourceUdpSocket(isNewTrigger);
 			f3xBase.TriggerMulticastSocket(isNewTrigger);
+			f3xBase.TriggerSourceUdpSocket(isNewTrigger);
+			f3xBase.TriggerTtyTHSx(isNewTrigger);			
+			f3xBase.TriggerTtyUSB0(isNewTrigger);
 			f3xBase.RedLed(on);
 		}         
 
