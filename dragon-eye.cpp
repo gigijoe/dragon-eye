@@ -76,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.7c"
+#define VERSION "v0.1.8"
 
 //#define CAMERA_1080P
 
@@ -994,32 +994,21 @@ void FrameQueue::cancel()
 	condEvent.notify_all();
 }
 
-#if 0
-void FrameQueue::push(cv::Mat const & image)
-{
-	while(matQueue.size() >= 6) { /* Prevent memory overflow ... */
-		printf("Video Frame droped !!!\n");
-		return; /* Drop frame */
-	}
-
-	std::unique_lock<std::mutex> mlock(matMutex);
-	matQueue.push(image);
-	condEvent.notify_all();
-}
-#else
 void FrameQueue::push(cv::Mat const & image)
 {
 	std::unique_lock<std::mutex> mlock(matMutex);
 
-	while(matQueue.size() >= 6) { /* Prevent memory overflow ... */
+	while(matQueue.size() >= 15) { /* Prevent memory overflow ... */
 		printf("Video Frame droped !!!\n");
-		matQueue.pop();
+		if(refCnt == 0)
+			matQueue.pop();
+		else
+			return;
 	}
 
 	matQueue.push(image);
 	condEvent.notify_all();
 }
-#endif
 
 void FrameQueue::pop()
 {
@@ -3791,14 +3780,14 @@ int main(int argc, char**argv)
 				writeText(outFrame, str, Point( 40, 280 ));
 
 				if(f3xBase.IsVideoOutput())
-					videoOutputQueue.push(outFrame.clone());
+					videoOutputQueue.push(outFrame);
 				if(f3xBase.IsVideoOutputRTSP() && g_clientCount.load() > 0)
-					videoRtspQueue.push(outFrame.clone());
+					videoRtspQueue.push(outFrame);
 			} else {
 				if(f3xBase.IsVideoOutput())
-					videoOutputQueue.push(capFrame.clone());
+					videoOutputQueue.push(capFrame);
 				if(f3xBase.IsVideoOutputRTSP() && g_clientCount.load() > 0)
-					videoRtspQueue.push(capFrame.clone());
+					videoRtspQueue.push(capFrame);
 			}
 		}
 
