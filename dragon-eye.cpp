@@ -76,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.8"
+#define VERSION "v0.1.8a"
 
 //#define CAMERA_1080P
 
@@ -261,14 +261,13 @@ const std::string currentDateTime() {
 *
 */
 
-inline void writeText( Mat & mat, const string text, const Point textOrg)
+static void writeText(Mat & mat, const string & text, Point textOrg)
 {
    //int fontFace = FONT_HERSHEY_SIMPLEX; 
    int fontFace = FONT_HERSHEY_DUPLEX;
    double fontScale = 1;
    int thickness = 2;  
-   //Point textOrg( 10, 40 );
-   putText( mat, text, textOrg, fontFace, fontScale, Scalar(0, 0, 0), thickness, cv::LINE_8 );
+   putText(mat, text, textOrg, fontFace, fontScale, Scalar(0, 0, 0), thickness, cv::LINE_8);
 }
 
 /*
@@ -343,8 +342,6 @@ public:
 		m_normVelocity = 0;
 		m_angleOfTurn = 0;
 		//m_arcLength = 0; /* TODO : Do clear this ? */
-		//m_absLength = 0;
-		//m_lastFrameTick =
 	}
 
 	void Update(Rect & roi, unsigned long frameTick) {
@@ -1955,6 +1952,7 @@ private:
 	bool m_isBugTrigger;
 	uint16_t m_relayDebouence;
 	uint16_t m_horizonRatio;
+	bool m_isBuzzer;
 
 	thread m_udpServerThread;
 	bool m_bUdpServerRun;
@@ -2089,6 +2087,7 @@ public:
 		m_isBugTrigger(false),
 		m_relayDebouence(800),
 		m_horizonRatio(20),
+		m_isBuzzer(true),
 		m_bUdpServerRun(false),
 		m_srcIp(0), m_srcPort(0),
 		m_bApMulticastSenderRun(false),
@@ -3080,7 +3079,12 @@ public:
 					m_horizonRatio = stoi(s);
 				else
 					cout << "Invalid " << it->first << "=" << s << endl;			
-			} 	
+			} else if(it->first == "base.buzzer") {
+				if(it->second == "yes" || it->second == "1")
+					m_isBuzzer = true;
+				else
+					m_isBuzzer = false;
+			}
 		}
 	}
 
@@ -3096,7 +3100,8 @@ video.output.result=no\n\
 base.mog2.threshold=32\n\
 base.new.target.restriction=no\n\
 base.relay.debouence=800\n\
-base.horizon.ratio=20";
+base.horizon.ratio=20\n\
+base.buzzer=yes";
 
 	void LoadSystemConfig() {
 		char fn[STR_SIZE];
@@ -3192,6 +3197,10 @@ base.horizon.ratio=20";
 
 	inline uint16_t HorizonRatio() const {
 		return m_horizonRatio;
+	}
+
+	inline bool IsBuzzer() const {
+		return m_isBuzzer;
 	}
 
 	void RedLed(pinValues onOff) {
@@ -3569,6 +3578,7 @@ int main(int argc, char**argv)
 		F3xBase::Start();
 
 	auto lastTriggerTime(steady_clock::now());
+	uint8_t doTriggerCount = 0;
 
 	while(1) {
 		if(bShutdown)
@@ -3659,8 +3669,8 @@ int main(int argc, char**argv)
 					rectangle( outFrame, rr->tl(), rr->br(), Scalar(0, 255, 0), 2, 8, 0 );
 				if(f3xBase.IsNewTargetRestriction()) {
 					Rect nr = tracker.NewTargetRestrictionRect();
-					rectangle( outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
-					writeText( outFrame, "New Target Restriction Area", Point(120, CAMERA_HEIGHT - 180));
+					rectangle(outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
+					writeText(outFrame, "New Target Restriction Area", Point(120, CAMERA_HEIGHT - 180));
 				}
 				//line(outFrame, Point(0, (camera.Height() / 5) * 4), Point(camera.Width(), (camera.Height() / 5) * 4), Scalar(127, 127, 0), 1);
 				line(outFrame, Point(0, tracker.HorizonHeight()), Point(camera.Width(), tracker.HorizonHeight()), Scalar(0, 255, 255), 1);
@@ -3731,7 +3741,7 @@ int main(int argc, char**argv)
 			}
 		}
 
-		if(doTrigger) { /* t->TriggerCount() > 0 */
+		if(doTrigger || doTriggerCount > 0) { /* t->TriggerCount() > 0 */
 			if(f3xBase.IsVideoOutputResult()) {
 				if(f3xBase.IsVideoOutput() || f3xBase.IsVideoOutputRTSP())
 					line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
@@ -3743,8 +3753,11 @@ int main(int argc, char**argv)
 			if(duration > f3xBase.RelayDebouence())
 				f3xBase.Relay(on);
 
-			if(duration > 150) /* new trigger */
+			if(duration > 330) /* new trigger */
 				isNewTrigger = true;
+
+			if(isNewTrigger)
+				doTriggerCount = MAX_NUM_TRIGGER;
 
 			lastTriggerTime = steady_clock::now();
 
@@ -3752,8 +3765,12 @@ int main(int argc, char**argv)
 			f3xBase.TriggerSourceUdpSocket(isNewTrigger);
 			f3xBase.TriggerTtyTHSx(isNewTrigger);			
 			f3xBase.TriggerTtyUSB0(isNewTrigger);
-			f3xBase.RedLed(on);
-		}         
+			if(f3xBase.IsBuzzer())
+				f3xBase.RedLed(on);
+
+			if(doTriggerCount > 0)
+				doTriggerCount--;
+		} 
 
 		if(f3xBase.IsVideoOutput() || f3xBase.IsVideoOutputRTSP()) {
 			if(f3xBase.IsVideoOutputResult()) {
