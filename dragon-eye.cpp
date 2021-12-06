@@ -76,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.8a"
+#define VERSION "v0.1.8b"
 
 //#define CAMERA_1080P
 
@@ -3578,6 +3578,8 @@ int main(int argc, char**argv)
 		F3xBase::Start();
 
 	auto lastTriggerTime(steady_clock::now());
+	auto lastRelayTriggerTime(steady_clock::now());
+
 	uint8_t doTriggerCount = 0;
 
 	while(1) {
@@ -3747,12 +3749,15 @@ int main(int argc, char**argv)
 					line(outFrame, Point(cx, 0), Point(cx, cy), Scalar(0, 0, 255), 3);
 			}
 
-			bool isNewTrigger = false;
-			long long duration = duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count();
+			long long duration = duration_cast<milliseconds>(steady_clock::now() - lastRelayTriggerTime).count();
 			//printf("duration = %lld\n" , duration);
-			if(duration > f3xBase.RelayDebouence())
+			if(duration > f3xBase.RelayDebouence()) {
 				f3xBase.Relay(on);
+				lastRelayTriggerTime = steady_clock::now();
+			}
 
+			bool isNewTrigger = false;
+			duration = duration_cast<milliseconds>(steady_clock::now() - lastTriggerTime).count();
 			if(duration > 330) /* new trigger */
 				isNewTrigger = true;
 
