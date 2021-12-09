@@ -1,0 +1,21 @@
+# Changelog
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+
+## [v0.1.8b] - 2021-12-10
+### Dragon Eye Base
+- Fix bug of missing relay trigger in rare condition
+- Send minimum six packets of Multicast / UDP with 33ms interval per trigger
+
+### Dragon Eye Remote Control
+- Fix bug of incorrect F3F timing result
+- Reduce trigger sound delay
+- Indvidual Start / Stop button for every base
+- Show information of trigger loss and total counts
+- Setting of enable / disable buzzer
+- Records of F3F timing
+- Clear all bases function
+
+### Known Issue
+- There may be 0.01 second deviation between voice and display result of F3F timing
