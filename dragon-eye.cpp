@@ -76,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.8b"
+#define VERSION "v0.1.9"
 
 //#define CAMERA_1080P
 

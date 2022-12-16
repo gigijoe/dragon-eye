@@ -161,11 +161,11 @@ The ‘MOG2 threshold’ setting is the adjustment of background subtraction, th
 
 #### Fake Target Detection
 
-Fake Target Detection records all new targets in the previous 3 seconds, if there are targets that overlap too many times these targets will be treated as a fake target and will not trigger the system.
+‘Fake Target Detection‘ records all new targets in the previous 3 seconds, if there are targets that overlap too many times these targets will be treated as a fake target and will not trigger the system.
 
-#### Bug Trigger
+#### Fly Bug Detection
 
-Bug trigger is to prevent false triggers caused by bugs flying through the field of view. Bugs are usually small and fast, so targets that are small in size and at high speed will not cause a  trigger when they cross the central line.
+‘Fly Bug Detection‘ is to prevent false triggers caused by bugs flying through the field of view. Bugs are usually small and fast, so targets that are small in size and at high speed will not cause a trigger when they cross the central line.
 
 #### Donate
 
