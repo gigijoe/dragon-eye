@@ -1266,10 +1266,45 @@ int gst_rtsp_server_task(int width, int height, int fps)
 		"appsrc name=mysrc is-live=true ! video/x-raw, format=(string)BGR ! videoconvert ! \
 omxh265enc insert-sps-pps=1 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 #else
+/*
 	gst_rtsp_media_factory_set_launch (factory,
 		"appsrc name=mysrc is-live=true ! video/x-raw, format=(string)BGR ! videoconvert ! video/x-raw, format=(string)BGRx ! \
 nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420 ! \
 nvv4l2h265enc bitrate=8000000 maxperf-enable=1 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
+*/
+/*
+
+https://forums.developer.nvidia.com/t/pulsing-at-iframe-interval-using-nvv4l2h265enc/194172/4
+
+https://forums.developer.nvidia.com/t/random-blockiness-in-the-picture-rtsp-server-client-jetson-tx2/174896
+
+https://forums.developer.nvidia.com/t/h264-vs-h265/115260/3
+
+https://forums.developer.nvidia.com/t/nvv4l2h264enc-latency-and-preset-level/184221/15
+
+*/
+/*
+preset-level        : HW preset level for encoder
+                        flags: readable, writable, changeable only in NULL or READY state
+                        Enum "GstV4L2VideoEncHwPreset" Default: 1, "UltraFastPreset"
+                           (0): DisablePreset    - Disable HW-Preset
+                           (1): UltraFastPreset  - UltraFastPreset for high perf
+                           (2): FastPreset       - FastPreset
+                           (3): MediumPreset     - MediumPreset
+                           (4): SlowPreset       - SlowPreset
+
+poc-type            : Set Picture Order Count type value
+                        flags: readable, writable, changeable only in NULL or READY state
+                        Unsigned Integer. Range: 0 - 2 Default: 0
+maxperf-enable      : Enable or Disable Max Performance mode
+                        flags: readable, writable, changeable only in NULL or READY state
+                        Boolean. Default: false                        
+*/	
+	gst_rtsp_media_factory_set_launch (factory,
+		"appsrc name=mysrc is-live=true ! video/x-raw, format=(string)BGR ! videoconvert ! video/x-raw, format=(string)BGRx ! \
+nvvidconv ! video/x-raw(memory:NVMM), format=(string)I420 ! \
+nvv4l2h265enc bitrate=8000000 control-rate=1 vbv-size=360000 preset-level=1 poc-type=2 maxperf-enable=true insert-vui=true insert-sps-pps=1 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
+
 //nvv4l2h265enc maxperf-enable=1 iframeinterval=10 bitrate=8000000 ! rtph265pay mtu=1400 name=pay0 pt=96 )");
 #endif
 	gst_rtsp_media_factory_set_eos_shutdown(factory, TRUE);
@@ -1348,7 +1383,7 @@ void VideoOutputTask(BaseType_t baseType, bool isVideoOutputScreen, bool isVideo
 	VideoWriter outScreen;
 	VideoWriter outRTP;
 	VideoWriter outHLS;
-	VideoWriter outRTSP;
+	//VideoWriter outRTSP;
 
 	int videoOutoutIndex = 0;
 

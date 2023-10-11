@@ -4,6 +4,8 @@ find_package( OpenCV REQUIRED )
 find_package( CUDA REQUIRED )
 
 set( THREADS_PREFER_PTHREAD_FLAG ON )
+set( CMAKE_CXX_FLAGS "-O3" )
+
 find_package( Threads REQUIRED )
 
 add_definitions( -std=c++11 )
