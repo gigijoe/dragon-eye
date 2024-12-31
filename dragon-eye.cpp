@@ -76,7 +76,7 @@ using std::chrono::seconds;
 #define dprintf(...) do{ } while ( false )
 #endif
 
-#define VERSION "v0.1.9"
+#define VERSION "v0.1.9a"
 
 //#define CAMERA_1080P
 
@@ -1770,7 +1770,7 @@ exposuretimerange=\"5000000 10000000\"\n\
 exposurecompensation=0\n\
 # exposure threshold from 0 ~ 5\n\
 exposurethreshold=3\n\
-# flip-mode is 1 or 3
+# flip-mode is 1 or 3\n\
 flip-mode=3\n";
 
 	void LoadConfig() {
