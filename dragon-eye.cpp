@@ -1643,10 +1643,11 @@ public:
 	string exposuretimerange; /* Default null */
 	float exposurecompensation = 0;
 	int exposurethreshold = 5;
+	int flip_mode = 3;
 
 	Camera() : m_width(CAMERA_WIDTH), m_height(CAMERA_HEIGHT), m_fps(CAMERA_FPS), sensor_id(0), wbmode(0), tnr_mode(1), tnr_strength(-1), ee_mode(1), ee_strength(-1),
 		gainrange("1 16"), ispdigitalgainrange("1 8"), exposuretimerange("5000000 10000000"),
-		exposurecompensation(0), exposurethreshold(5) {
+		exposurecompensation(0), exposurethreshold(5), flip_mode(3) {
 	}
 
 	Camera(int width, int height, int fps) : Camera() {
@@ -1675,15 +1676,15 @@ nvvidconv flip-method=3 ! video/x-raw, format=(string)BGRx ! videoconvert ! vide
 		if(sensor_id < 2) {
 			snprintf(gstStr, STR_SIZE, "nvarguscamerasrc sensor-id=%d wbmode=%d tnr-mode=%d tnr-strength=%f ee-mode=%d ee-strength=%f gainrange=%s ispdigitalgainrange=%s exposuretimerange=%s exposurecompensation=%f ! \
 video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, format=(string)NV12, framerate=(fraction)%d/1 ! \
-nvvidconv flip-method=3 ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
+nvvidconv flip-method=%d ! video/x-raw, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true ", 
 				sensor_id, wbmode, tnr_mode, tnr_strength, ee_mode, ee_strength, gainrange.c_str(), ispdigitalgainrange.c_str(), exposuretimerange.c_str(), exposurecompensation,
-				m_height, m_width, m_fps);
+				m_height, m_width, m_fps, flip_mode);
 		} else { /* USB camera - MJPG */
 			snprintf(gstStr, STR_SIZE, "v4l2src device=/dev/video%d io-mode=2 ! image/jpeg, width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! \
 nvv4l2decoder mjpeg=1 ! \
-nvvidconv flip-method=3 ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true", 
+nvvidconv flip-method=%d ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink max-buffers=1 drop=true", 
 				sensor_id, 
-				m_height, m_width, m_fps);			
+				m_height, m_width, m_fps, flip_mode);			
 		}
 #endif
 
@@ -1749,6 +1750,8 @@ t. ! nvvidconv flip-method=3 ! video/x-raw, format=(string)BGRx ! videoconvert !
 				exposurecompensation = stof(it->second);
 			else if(it->first == "exposurethreshold")
 				exposurethreshold = stoi(it->second);
+			else if(it->first == "flip-mode")
+				flip_mode = stoi(it->second);
 		}
 		cout << endl;
 	}
@@ -1766,7 +1769,9 @@ exposuretimerange=\"5000000 10000000\"\n\
 # exposure compensation from -2 ~ 2\n\
 exposurecompensation=0\n\
 # exposure threshold from 0 ~ 5\n\
-exposurethreshold=3\n";
+exposurethreshold=3\n\
+# flip-mode is 1 or 3
+flip-mode=3\n";
 
 	void LoadConfig() {
 		char fn[STR_SIZE];
