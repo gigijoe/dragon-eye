@@ -84,10 +84,11 @@ using std::chrono::seconds;
 	#define CAMERA_WIDTH 1080
 	#define CAMERA_HEIGHT 1920
 	#define CAMERA_FPS 30
-	#define MIN_TARGET_WIDTH 9
-	#define MIN_TARGET_HEIGHT 12
+	#define MIN_TARGET_WIDTH 6 
+	#define MIN_TARGET_HEIGHT 8
 	#define MAX_TARGET_WIDTH 480
 	#define MAX_TARGET_HEIGHT 480
+	#define MAX_TARGET_TRACKING_DISTANCE 540
 #else
 	#define CAMERA_WIDTH 720
 	#define CAMERA_HEIGHT 1280
@@ -96,9 +97,8 @@ using std::chrono::seconds;
 	#define MIN_TARGET_HEIGHT 8
 	#define MAX_TARGET_WIDTH 320
 	#define MAX_TARGET_HEIGHT 320
+	#define MAX_TARGET_TRACKING_DISTANCE 360
 #endif
-
-#define MAX_TARGET_TRACKING_DISTANCE    360
 
 #define MAX_NUM_TARGET               	9      /* Maximum targets to tracing */
 #define MAX_NUM_TRIGGER              	6      /* Maximum number of RF trigger after detection of cross line */
@@ -3379,7 +3379,11 @@ void F3xBase::Start()
 	tracker.UpdateHorizonRatio(f3xBase.HorizonRatio());
 
 	if(f3xBase.IsNewTargetRestriction())
+#ifndef CAMERA_1080P
 		tracker.NewTargetRestriction(Rect(180, camera.Height() - 180, 360, 180));
+#else		
+		tracker.NewTargetRestriction(Rect(270, camera.Height() - 180, 540, 270));
+#endif
 	else
 		tracker.NewTargetRestriction(Rect());
 
@@ -3712,7 +3716,11 @@ int main(int argc, char**argv)
 				if(f3xBase.IsNewTargetRestriction()) {
 					Rect nr = tracker.NewTargetRestrictionRect();
 					rectangle(outFrame, nr.tl(), nr.br(), Scalar(127, 0, 127), 2, 8, 0 );
+#ifdef CAMERA_1080P
+					writeText(outFrame, "New Target Restriction Area", Point(240, CAMERA_HEIGHT - 180));
+#else
 					writeText(outFrame, "New Target Restriction Area", Point(120, CAMERA_HEIGHT - 180));
+#endif
 				}
 				//line(outFrame, Point(0, (camera.Height() / 5) * 4), Point(camera.Width(), (camera.Height() / 5) * 4), Scalar(127, 127, 0), 1);
 				line(outFrame, Point(0, tracker.HorizonHeight()), Point(camera.Width(), tracker.HorizonHeight()), Scalar(0, 255, 255), 1);
@@ -3841,10 +3849,16 @@ int main(int argc, char**argv)
 				snprintf(str, 32, "Exposure threshold %d", camera.ExposureThreshold());
 				writeText(outFrame, str, Point( 40, 280 ));
 
+				static uint32_t outFrameCount = 0;
 				if(f3xBase.IsVideoOutput())
 					videoOutputQueue.push(outFrame);
 				if(f3xBase.IsVideoOutputRTSP() && g_clientCount.load() > 0)
+#ifdef CAMERA_1080P					
+					if(++outFrameCount % 3 == 0)
+						videoRtspQueue.push(outFrame);
+#else
 					videoRtspQueue.push(outFrame);
+#endif
 			} else {
 				if(f3xBase.IsVideoOutput())
 					videoOutputQueue.push(capFrame);
